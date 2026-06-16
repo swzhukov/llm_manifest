@@ -1,0 +1,10 @@
+# RAG binary artifacts (rebuildable)
+rag/index.pkl
+rag/chunks.json
+rag/vocab.pkl
+rag/norms.npy
+rag/__pycache__/
+
+# OS files
+.DS_Store
+Thumbs.db

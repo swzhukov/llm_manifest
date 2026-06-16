@@ -1,0 +1,623 @@
+# Optimizing Telegram Archive Processing Script
+
+Source: DS | Date: 2026-05-25 | Messages: 1 | ID: d0822bd2-4a00-4875-85fb-0b053ef16d87
+
+---
+
+## user
+
+Проанализируй код, который я тебе предоставлю, пойми что и зачем он делает. Разберись почему он построен именно так. Дай свои комментарии что можно сделать лучше и правильнее для конечной цели.
+
+# ============================================================
+#  Установка системных зависимостей и Newton CLI
+# ============================================================
+!apt-get update -qq && apt-get install -y -qq ffmpeg p7zip-full tesseract-ocr tesseract-ocr-rus poppler-utils
+!pip install -q tqdm python-pptx python-docx pypdf pdfplumber openpyxl pandas pytesseract Pillow requests ijson psutil
+!pip install -q git+https://github.com/aratakileo/mailru-cloud-guest-api.git
+!curl -sL https://gitlab.com/fadeyev1/newton-cli/-/raw/main/newton -o /usr/local/bin/newton
+!chmod +x /usr/local/bin/newton
+
+import os, csv, gc, json, shutil, subprocess, tempfile, zipfile, multiprocessing, hashlib, time, logging, sys, resource, psutil
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Dict, Optional, Tuple, List
+from urllib.parse import unquote, urlparse
+from collections import defaultdict
+
+import ijson, requests
+from tqdm.notebook import tqdm
+from PIL import Image
+import pytesseract
+from pypdf import PdfReader
+import pdfplumber
+from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from docx import Document
+from openpyxl import load_workbook
+
+try:
+    from google.colab import files as colab_files
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
+
+# ============================================================
+#  КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ
+# ============================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("/content/processing.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================
+#  КОНФИГУРАЦИЯ
+# ============================================================
+NEWTON_TOKEN = os.environ.get("NEWTON_TOKEN", "").strip()
+if not NEWTON_TOKEN:
+    NEWTON_TOKEN = input("Введите Newton API токен: ").strip()
+    if not NEWTON_TOKEN:
+        raise ValueError("NEWTON_TOKEN обязателен")
+os.environ["NEWTON_TOKEN"] = NEWTON_TOKEN
+
+NEWTON_ENGINE = "v3"
+ENABLE_DIARIZATION = True
+DIARIZE_SPEAKERS = None
+ENABLE_OCR = True
+OCR_LANG = "rus+eng"
+MERGE_WINDOW_MINUTES = 5
+MAX_OCR_PAGES = 20                  # снижено для экономии памяти
+SAFE_MEMORY_RATIO = 0.7             # 70% свободной памяти – порог пропуска файла
+WORKER_MEMORY_LIMIT_MB = 1536       # лимит для дочернего процесса (1.5 ГБ)
+CACHE_DIR = Path("/content/media_cache")
+OUTPUT_DIR = "/content/llm_output"
+UPLOAD_DIR = Path("/content/export_uploaded")
+TEMP_ROOT = Path("/content/telegram_export_work")
+
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+
+# ============================================================
+#  ДИАЛОГ ВЫБОРА ИСТОЧНИКА
+# ============================================================
+def get_source_choice() -> str:
+    print("=" * 60)
+    print("Выберите источник файла:")
+    print("  1 - Локальный файл (загрузить в Colab или указать путь)")
+    print("  2 - Яндекс.Диск (публичная ссылка)")
+    print("  3 - Облако Mail.ru (публичная ссылка)")
+    print("=" * 60)
+    while True:
+        choice = input("Введите номер (1/2/3): ").strip()
+        if choice in ("1", "2", "3"):
+            return {"1": "local", "2": "yandex", "3": "mailru"}[choice]
+        print("⚠️ Пожалуйста, введите 1, 2 или 3.")
+
+# ============================================================
+#  ЗАГРУЗКА ИЗ ОБЛАКОВ
+# ============================================================
+def download_from_yandex(public_url: str, dest_dir: Path) -> Path:
+    try:
+        api_url = "https://cloud-api.yandex.net/v1/disk/public/resources/download"
+        resp = requests.get(api_url, params={"public_key": public_url})
+        resp.raise_for_status()
+        data = resp.json()
+        download_url = data["href"]
+        file_name = data.get("name") or Path(unquote(urlparse(download_url).path)).name
+        dest_path = dest_dir / file_name
+        logger.info(f"Скачиваем {file_name} с Яндекс.Диска...")
+        with requests.get(download_url, stream=True) as r:
+            r.raise_for_status()
+            with open(dest_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        logger.info(f"Файл скачан: {dest_path.name}")
+        return dest_path
+    except Exception as e:
+        logger.error(f"Ошибка загрузки из Яндекс.Диска: {e}")
+        raise
+
+def download_from_mailru(public_url: str, dest_dir: Path) -> Path:
+    try:
+        from mailru_cloud_guest_api import FileStreamGenerator
+
+        generator = FileStreamGenerator.of(public_url)
+        container = generator.generate()
+        parsed = urlparse(public_url)
+        file_name = Path(unquote(parsed.path)).name or "mailru_download"
+        dest_path = dest_dir / file_name
+        logger.info(f"Скачиваем {file_name} из Облака Mail.ru...")
+        container.download(str(dest_path))
+        logger.info(f"Файл скачан: {dest_path.name}")
+        return dest_path
+    except Exception as e:
+        logger.error(f"Ошибка загрузки из Облака Mail.ru: {e}")
+        raise
+
+def obtain_zip_path(source_choice: str) -> Tuple[Path, str]:
+    if source_choice == "local":
+        if IN_COLAB:
+            print("📎 Загрузите ZIP-архив экспорта Telegram")
+            uploaded = colab_files.upload()
+            if not uploaded:
+                raise RuntimeError("Файл не загружен")
+            zip_name = next(iter(uploaded))
+            zip_path = UPLOAD_DIR / zip_name
+            shutil.move(zip_name, str(zip_path))
+            return zip_path, Path(zip_name).stem
+        else:
+            path_str = input("Введите путь к ZIP-файлу: ").strip()
+            local_path = Path(path_str).expanduser().resolve()
+            if not local_path.exists() or local_path.suffix.lower() != ".zip":
+                raise FileNotFoundError("Указанный файл не является ZIP-архивом")
+            return local_path, local_path.stem
+    elif source_choice == "yandex":
+        public_url = input("🔗 Введите публичную ссылку Яндекс.Диска: ").strip()
+        if not (public_url.startswith("https://disk.yandex.") or public_url.startswith("https://yadi.sk")):
+            raise ValueError("Некорректная ссылка Яндекс.Диска")
+        zip_path = download_from_yandex(public_url, UPLOAD_DIR)
+        return zip_path, zip_path.stem
+    elif source_choice == "mailru":
+        public_url = input("🔗 Введите публичную ссылку Облака Mail.ru: ").strip()
+        if not public_url.startswith("https://cloud.mail.ru/"):
+            raise ValueError("Некорректная ссылка Облака Mail.ru")
+        zip_path = download_from_mailru(public_url, UPLOAD_DIR)
+        return zip_path, zip_path.stem
+    else:
+        raise ValueError(f"Неизвестный источник: {source_choice}")
+
+# ============================================================
+#  КЭШ НА ОСНОВЕ ПУТИ В ZIP (решает проблему уникальных временных папок)
+# ============================================================
+def cache_key_for_zip_member(zip_member: str, file_size: int, file_mtime: float) -> str:
+    """Генерирует ключ кэша, не зависящий от временного пути извлечения."""
+    raw = f"{zip_member}:{file_mtime}:{file_size}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+def load_from_cache_by_key(cache_key: str) -> Optional[str]:
+    cache_file = CACHE_DIR / cache_key
+    if cache_file.exists():
+        return cache_file.read_text(encoding="utf-8")
+    return None
+
+def save_to_cache_by_key(cache_key: str, result: str):
+    cache_file = CACHE_DIR / cache_key
+    tmp_file = CACHE_DIR / f".{cache_key}.tmp"
+    tmp_file.write_text(result, encoding="utf-8")
+    tmp_file.replace(cache_file)
+    logger.debug(f"Сохранено в кэш: {cache_key}")
+
+# ============================================================
+#  КОНСТАНТЫ ДЛЯ get_media_info
+# ============================================================
+_MEDIA_KEYS = ["photo", "video", "document", "audio", "voice_message",
+               "sticker", "animation", "video_file", "audio_file"]
+
+def get_media_info(msg: dict) -> Optional[Tuple[str, str]]:
+    media_type = msg.get("media_type")
+    file_path = msg.get("file")
+    if media_type and file_path:
+        return (media_type, file_path)
+    for key in _MEDIA_KEYS:
+        if key in msg:
+            val = msg[key]
+            if isinstance(val, str):
+                return (key, val)
+            if isinstance(val, dict) and "file" in val:
+                return (key, val["file"])
+    if file_path:
+        return ("document", file_path)
+    return None
+
+# ============================================================
+#  ВОРКЕР ДЛЯ ОДНОГО МЕДИАФАЙЛА
+# ============================================================
+def _media_worker_task(file_path_str: str, media_type: str, output_file: str):
+    try:
+        soft = WORKER_MEMORY_LIMIT_MB * 1024 * 1024
+        hard = int(soft * 1.2)
+        resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+    except Exception:
+        pass
+
+    file_path = Path(file_path_str)
+    ext = file_path.suffix.lower()
+    audio_video_ext = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".opus",
+                       ".mp4", ".webm", ".mkv", ".avi", ".mov"}
+    image_ext = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"}
+
+    wav_path = None
+    txt_path = None
+    tmp_wav_fd = None
+    tmp_txt_fd = None
+
+    try:
+        if (media_type in ("audio", "voice_message", "video", "animation",
+                           "video_file", "audio_file", "voice", "round_video")
+                or ext in audio_video_ext):
+            if not _ensure_audio_stream(file_path):
+                Path(output_file).write_text("[нет аудиодорожки]", encoding="utf-8")
+                return
+
+            tmp_wav_fd = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            wav_path = Path(tmp_wav_fd.name)
+            tmp_wav_fd.close()
+
+            if not _convert_to_wav(file_path, wav_path):
+                Path(output_file).write_text("ERROR", encoding="utf-8")
+                return
+
+            tmp_txt_fd = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
+            txt_path = Path(tmp_txt_fd.name)
+            tmp_txt_fd.close()
+
+            engine = "diarize" if (ENABLE_DIARIZATION and NEWTON_ENGINE in ("v3", "diarize")) else NEWTON_ENGINE
+            cmd = ["newton", "transcribe", str(wav_path), "-o", str(txt_path), "-e", engine]
+            if engine == "diarize" and DIARIZE_SPEAKERS is not None:
+                cmd.extend(["-n", str(DIARIZE_SPEAKERS)])
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+            result = txt_path.read_text(encoding="utf-8").strip() if txt_path.exists() else "ERROR"
+            Path(output_file).write_text(result, encoding="utf-8")
+
+        elif media_type in ("photo", "sticker") or ext in image_ext:
+            try:
+                img = Image.open(file_path)
+                text = pytesseract.image_to_string(img, lang=OCR_LANG).strip()
+                img.close()
+                Path(output_file).write_text(text if text else "[нет текста]", encoding="utf-8")
+            except Exception:
+                Path(output_file).write_text("ERROR", encoding="utf-8")
+
+        else:
+            try:
+                if ext in {'.pptx', '.ppt'}:
+                    text = _extract_text_from_pptx(file_path)
+                elif ext in {'.docx', '.doc'}:
+                    text = _extract_text_from_docx(file_path)
+                elif ext == '.pdf':
+                    text = _extract_text_from_pdf(file_path)
+                elif ext in {'.xlsx', '.xls'}:
+                    text = _extract_text_from_xlsx(file_path)
+                else:
+                    text = _extract_text_from_txt(file_path)
+                Path(output_file).write_text(text if text else "[нет текста]", encoding="utf-8")
+            except Exception:
+                Path(output_file).write_text("ERROR", encoding="utf-8")
+    except MemoryError:
+        Path(output_file).write_text("ERROR", encoding="utf-8")
+    except Exception:
+        Path(output_file).write_text("ERROR", encoding="utf-8")
+    finally:
+        for path in [wav_path, txt_path]:
+            if path is not None and path.exists():
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        for fd in [tmp_wav_fd, tmp_txt_fd]:
+            if fd is not None:
+                try:
+                    fd.close()
+                except Exception:
+                    pass
+
+# ============================================================
+#  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
+def _ensure_audio_stream(file_path: Path) -> bool:
+    try:
+        res = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0",
+                              "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(file_path)],
+                             capture_output=True, text=True, timeout=15)
+        return "audio" in res.stdout.strip()
+    except: return False
+
+def _convert_to_wav(input_path: Path, output_path: Path) -> bool:
+    try:
+        subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-ac", "1", "-ar", "16000",
+                        "-sample_fmt", "s16", str(output_path)],
+                       check=True, capture_output=True, timeout=120)
+        return output_path.exists()
+    except: return False
+
+def _extract_text_from_pptx(pptx_path: Path) -> Optional[str]:
+    try:
+        prs = Presentation(str(pptx_path))
+        parts = []
+        for i, slide in enumerate(prs.slides, 1):
+            slide_text = []
+            def extract_shape(shape):
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        if para.text.strip(): slide_text.append(para.text.strip())
+                if shape.has_table:
+                    rows = ["| " + " | ".join(cell.text for cell in row.cells) + " |" for row in shape.table.rows]
+                    if rows: slide_text.append("\n".join(rows))
+                if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                    for child in shape.shapes: extract_shape(child)
+            for shape in slide.shapes: extract_shape(shape)
+            if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+                notes = slide.notes_slide.notes_text_frame.text.strip()
+                if notes: slide_text.append(f"[Заметки]: {notes}")
+            if slide_text: parts.append(f"### Слайд {i}\n" + "\n".join(slide_text))
+        return "\n\n".join(parts) if parts else None
+    except:
+        return None
+
+def _extract_text_from_docx(docx_path: Path) -> Optional[str]:
+    try:
+        doc = Document(str(docx_path))
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            rows = ["| " + " | ".join(cell.text for cell in row.cells) + " |" for row in table.rows]
+            if rows: parts.append("\n".join(rows))
+        return "\n\n".join(parts) if parts else None
+    except:
+        return None
+
+def _extract_text_from_pdf(pdf_path: Path) -> Optional[str]:
+    text = None
+    try:
+        reader = PdfReader(str(pdf_path))
+        text = "\n".join(p.extract_text() or "" for p in reader.pages).strip()
+        if text: return text
+    except Exception:
+        pass
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages).strip()
+            if text: return text
+    except Exception:
+        pass
+
+    if not text and ENABLE_OCR:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                subprocess.run([
+                    "pdftoppm", "-png", "-r", "100",
+                    "-f", "1", "-l", str(MAX_OCR_PAGES),
+                    str(pdf_path), f"{tmpdir}/page"
+                ], capture_output=True, text=True, timeout=300)
+
+                pages = []
+                for i, img_file in enumerate(sorted(Path(tmpdir).glob("*.png"))):
+                    if i >= MAX_OCR_PAGES:
+                        break
+                    with Image.open(img_file) as img:
+                        img.load()
+                        t = pytesseract.image_to_string(img, lang=OCR_LANG).strip()
+                    img_file.unlink(missing_ok=True)
+                    if t:
+                        pages.append(t)
+                    if i % 5 == 0:
+                        gc.collect()
+                text = "\n".join(pages) if pages else None
+            except Exception as e:
+                logger.warning(f"OCR PDF failed for {pdf_path.name}: {e}")
+    return text if text else "[нет текста]"
+
+def _extract_text_from_xlsx(xlsx_path: Path) -> Optional[str]:
+    try:
+        wb = load_workbook(str(xlsx_path), read_only=True, data_only=True)
+        parts = []
+        for name in wb.sheetnames:
+            ws = wb[name]
+            rows = list(ws.iter_rows(max_row=100, values_only=True))
+            if not rows: continue
+            header = rows[0]
+            parts.append(f"### Лист: {name}")
+            parts.append("| " + " | ".join(str(c) if c is not None else "" for c in header) + " |")
+            parts.append("| " + " | ".join(["---"] * len(header)) + " |")
+            for row in rows[1:]:
+                parts.append("| " + " | ".join(str(c) if c is not None else "" for c in row) + " |")
+            parts.append("")
+        return "\n".join(parts) if parts else None
+    except:
+        return None
+
+def _extract_text_from_txt(file_path: Path) -> Optional[str]:
+    for enc in ["utf-8", "cp1251", "latin-1"]:
+        try:
+            return file_path.read_text(encoding=enc).strip()
+        except:
+            continue
+    return None
+
+# ============================================================
+#  ОСНОВНОЙ ЦИКЛ: ПОТОКОВАЯ ОБРАБОТКА ZIP (с работающим кэшем)
+# ============================================================
+def process_zip_direct(zip_path: Path, archive_name: str) -> Path:
+    out_csv = Path(OUTPUT_DIR) / f"{archive_name}.csv"
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        # 1. Находим result.json
+        json_names = [n for n in zf.namelist() if n.endswith('result.json')]
+        if not json_names:
+            raise FileNotFoundError("result.json не найден в архиве")
+        json_member = json_names[0]
+
+        # 2. Лёгкий индекс: имя файла → список полных путей в ZIP
+        zip_index = defaultdict(list)
+        for name in zf.namelist():
+            if not name.endswith('/'):
+                zip_index[Path(name).name].append(name)
+        logger.info(f"Индекс ZIP: {len(zip_index)} уникальных имён файлов")
+
+        # 3. Извлекаем только result.json во временную папку
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zf.extract(json_member, tmpdir)
+            json_path = Path(tmpdir) / json_member
+
+            with open(json_path, 'rb') as f_json, open(out_csv, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=['timestamp', 'from', 'content', 'inter_block_gap_seconds'])
+                writer.writeheader()
+
+                current_block = None
+                prev_block_last_dt = None
+                msg_count = 0
+
+                pbar = tqdm(desc="Обработка сообщений", unit="сообщ.", ncols=150,
+                            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+                try:
+                    for msg in ijson.items(f_json, 'messages.item'):
+                        if msg.get('type') != 'message':
+                            continue
+                        msg_count += 1
+                        if msg_count < 100:
+                            pbar.update(1)
+                        elif msg_count % 100 == 0:
+                            pbar.update(100)
+
+                        date_unixtime = safe_int(msg.get('date_unixtime', 0))
+                        dt = datetime.fromtimestamp(date_unixtime, tz=timezone.utc)
+                        from_name = msg.get('from', 'Unknown')
+                        text_raw = msg.get('text', '')
+                        if isinstance(text_raw, list):
+                            text = ''.join(item if isinstance(item, str) else item.get('text', '') for item in text_raw)
+                        else:
+                            text = str(text_raw) if text_raw else ''
+
+                        media_info = get_media_info(msg)
+                        media_desc = ''
+                        if media_info:
+                            media_type, rel_path = media_info
+                            media_name = Path(unquote(rel_path)).name
+                            candidates = zip_index.get(media_name, [])
+                            if candidates:
+                                zip_member = sorted(candidates)[0]
+                                if len(candidates) > 1:
+                                    logger.warning(f"Коллизия в ZIP для '{media_name}': {len(candidates)} вариантов, выбран {zip_member}")
+
+                                # Извлекаем медиафайл во временную папку
+                                with tempfile.TemporaryDirectory() as media_tmp:
+                                    zf.extract(zip_member, media_tmp)
+                                    file_path = Path(media_tmp) / zip_member
+
+                                    # Проверка доступной памяти
+                                    file_size = file_path.stat().st_size
+                                    avail_mem = psutil.virtual_memory().available
+                                    if file_size > avail_mem * SAFE_MEMORY_RATIO:
+                                        media_desc = f"(файл пропущен – недостаточно памяти: {file_size/1024/1024:.1f} МБ)"
+                                        logger.warning(f"Пропущен большой файл {media_name} ({file_size/1024/1024:.1f} МБ)")
+                                    else:
+                                        # Ключ кэша на основе ZIP-пути и метаданных
+                                        cache_key = cache_key_for_zip_member(zip_member, file_size, file_path.stat().st_mtime)
+                                        cached = load_from_cache_by_key(cache_key)
+                                        if cached is not None:
+                                            media_desc = cached
+                                        else:
+                                            logger.info(f"Обработка: {media_name}")
+                                            pbar.set_postfix_str(f"Файл: {media_name[:30]}")
+                                            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as res_tmp:
+                                                output_file = res_tmp.name
+                                            try:
+                                                p = multiprocessing.Process(
+                                                    target=_media_worker_task,
+                                                    args=(str(file_path), media_type, output_file)
+                                                )
+                                                p.start()
+                                                p.join(timeout=120)
+                                                if p.is_alive():
+                                                    p.terminate()
+                                                    p.join()
+                                                    media_desc = "(ошибка обработки - таймаут)"
+                                                    logger.warning(f"Таймаут: {media_name}")
+                                                else:
+                                                    with open(output_file, "r", encoding="utf-8") as res_f:
+                                                        res = res_f.read().strip()
+                                                    if res == "ERROR":
+                                                        media_desc = "(ошибка обработки)"
+                                                        logger.error(f"Ошибка обработки: {media_name}")
+                                                    else:
+                                                        media_desc = res
+                                                        save_to_cache_by_key(cache_key, media_desc)
+                                            finally:
+                                                try:
+                                                    os.remove(output_file)
+                                                except Exception:
+                                                    pass
+                            else:
+                                media_desc = "(файл отсутствует)"
+
+                        content = (text + ' ' + media_desc).strip()
+                        if not content:
+                            continue
+
+                        # Запись блока
+                        if current_block and current_block['author'] == from_name and \
+                           (dt - current_block['last_dt']) <= timedelta(minutes=MERGE_WINDOW_MINUTES):
+                            current_block['content'] += '\n' + content
+                            current_block['last_dt'] = dt
+                        else:
+                            if current_block:
+                                gap = 0.0
+                                if prev_block_last_dt is not None:
+                                    gap = (current_block['first_dt'] - prev_block_last_dt).total_seconds()
+                                writer.writerow({
+                                    'timestamp': current_block['last_dt'].strftime("%d.%m.%Y %H:%M:%S"),
+                                    'from': current_block['author'],
+                                    'content': current_block['content'],
+                                    'inter_block_gap_seconds': gap
+                                })
+                                prev_block_last_dt = current_block['last_dt']
+                            current_block = {
+                                'author': from_name,
+                                'first_dt': dt,
+                                'last_dt': dt,
+                                'content': content
+                            }
+
+                        if msg_count % 50 == 0:
+                            gc.collect()
+                            if psutil.virtual_memory().percent > 85:
+                                logger.warning("Высокое использование памяти, пауза 2 сек")
+                                time.sleep(2)
+
+                    if current_block:
+                        gap = 0.0
+                        if prev_block_last_dt is not None:
+                            gap = (current_block['first_dt'] - prev_block_last_dt).total_seconds()
+                        writer.writerow({
+                            'timestamp': current_block['last_dt'].strftime("%d.%m.%Y %H:%M:%S"),
+                            'from': current_block['author'],
+                            'content': current_block['content'],
+                            'inter_block_gap_seconds': gap
+                        })
+                finally:
+                    pbar.n = msg_count
+                    pbar.refresh()
+                    pbar.close()
+
+    logger.info(f"Обработано сообщений: {msg_count}")
+    logger.info(f"Результат сохранён: {out_csv} ({out_csv.stat().st_size/1024/1024:.2f} MB)")
+    return out_csv
+
+def safe_int(value, default=0):
+    try: return int(float(value))
+    except: return default
+
+# ============================================================
+#  ТОЧКА ВХОДА
+# ============================================================
+def main():
+    source = get_source_choice()
+    zip_path, archive_name = obtain_zip_path(source)
+    logger.info(f"Архив: {zip_path}")
+
+    result_csv = process_zip_direct(zip_path, archive_name)
+
+    logger.info("Обработка завершена.")
+    if IN_COLAB:
+        colab_files.download(str(result_csv))
+
+if __name__ == "__main__":
+    main()
+
+---
+
