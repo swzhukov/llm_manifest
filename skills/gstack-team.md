@@ -187,26 +187,35 @@ new → awaiting_payment → paid → confirmed → done
 
 **КРИТИЧНО: поднимать через `communicate { spawn }` субагента-ревьюера. НЕ ревьюить сам** — нужен adversarial pass, не самообман.
 
-**Способ 1 — spawn одного verifier'а:**
+**Приоритет агентов (проверять в указанном порядке):**
 
-```
-communicate({
-  spawn: { agent_name: "verifier", title: "GStack review of feature-x" },
-  content: "Загрузи .skills/gstack-team/SKILL.md.
-  Проверь код в worktree ../feature-x.
-  Используй 4 принципа Карпатого (wiki/AGENTS.md):
-  1. Think — что в коде не соответствует design doc?
-  2. Simplicity — что можно выкинуть без потери функционала?
-  3. Surgical — что меняет поведение незаявленно?
-  4. Goal-driven — есть ли измеримый критерий успеха, и достигнут ли он?
-  + типичные грабли (race conditions, unhandled null, missing
-  transactions, hardcoded secrets, no error path, deadlock на lock,
-  SSH heredoc, parse_mode Markdown).
-  Output: список issues, severity (critical/major/minor),
-  конкретные fix-предложения с file:line.
-  Не правь код сам — только отчёт."
-})
-```
+1. **Сначала проверить готовых peer-агентов** через `mavis { command: "session list", args: { mode: "peers", session_id: "me" } }` — искать агента `verifier` или `Verifier` в списке.
+2. **Если есть готовый Verifier-агент** — дёргать его напрямую (это дешевле spawn'а, он уже настроен):
+   ```
+   communicate({
+     to_session: "<verifier_session_id>",
+     content: "GStack review of feature-x..."
+   })
+   ```
+3. **Если готового нет** — `communicate { spawn }` субагента `verifier`:
+   ```
+   communicate({
+     spawn: { agent_name: "verifier", title: "GStack review of feature-x" },
+     content: "Загрузи .skills/gstack-team/SKILL.md.
+     Проверь код в worktree ../feature-x.
+     Используй 4 принципа Карпатого (wiki/AGENTS.md):
+     1. Think — что в коде не соответствует design doc?
+     2. Simplicity — что можно выкинуть без потери функционала?
+     3. Surgical — что меняет поведение незаявленно?
+     4. Goal-driven — есть ли измеримый критерий успеха, и достигнут ли он?
+     + типичные грабли (race conditions, unhandled null, missing
+     transactions, hardcoded secrets, no error path, deadlock на lock,
+     SSH heredoc, parse_mode Markdown).
+     Output: список issues, severity (critical/major/minor),
+     конкретные fix-предложения с file:line.
+     Не правь код сам — только отчёт."
+   })
+   ```
 
 **Способ 2 — team-план** для критичных PR (security, prod):
 producer пишет review, verifier независимо проверяет review. Стоит дороже (2 агента), использовать только для high-stakes.
