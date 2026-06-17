@@ -1652,3 +1652,86 @@ git remote set-url origin git@github.com:<USER>/<REPO>.git
 **Версия файла:** 3.0 (unified) · Дата: 2026-06-16
 **Основа:** ERRORS_AND_LESSONS.md (Капитал, 11 секций) + MISTAKES.md (research-agent, 15 секций) — объединены в 17 секций, удалены дубли, добавлены уникальные уроки.
 **Следующая ревизия:** при появлении новой категории ошибок или нового environment.
+
+### 3.19 ❌ YOUTUBE_API_KEY not set → /youtube_meta 500 (downstream bug)
+
+**Когда:** Flask endpoint /youtube_meta вызывается без YOUTUBE_API_KEY в .env.
+
+**Симптом:** `{"error":"YOUTUBE_API_KEY not set"}`, HTTP 500.
+
+**Root cause:** /youtube_meta endpoint требует YouTube Data API v3 (YOUTUBE_API_KEY) для парсинга meta. Если ключ пуст (PM сознательно — не нужна quota API, т.к. yt-dlp уже всё даёт через /youtube_subs), endpoint падает.
+
+**Решение — Вариант A** (минимальный, n8n workflow): добавить `continueOnFail: true` на HTTP /youtube_meta + fallback в Code node:
+```javascript
+title: meta.title || (subs.meta && subs.meta.title) || 'Без названия',
+```
+Работает даже если /youtube_meta упал — берёт из subs.meta (yt-dlp).
+
+**Решение — Вариант B** (лучше долгосрочно): fix /youtube_meta endpoint чтобы fallback на yt-dlp если YOUTUBE_API_KEY не задан.
+
+**Дата:** 17.06.2026 (sprint 6).
+
+---
+
+### 3.20 ❌ Werkzeug auto-reloader → Flask рестарт каждые 5 сек
+
+**Когда:** Flask запущен с debug=True (через `app.run(debug=True)` или `FLASK_DEBUG=1`).
+
+**Симптом:** api.log показывает 'endpoints registered OK' каждые 5 секунд. In-memory state теряется при каждом рестарте. n8n executions зависают.
+
+**Root cause:** Werkzeug auto-reloader следит за .py файлами и перезапускает процесс при mtime change.
+
+**Решение:** `FLASK_DEBUG=0 nohup python3 newton-api.py`. Или в коде: `app.run(host='0.0.0.0', port=8080, debug=False)`.
+
+**Дата:** 17.06.2026.
+
+---
+
+### 3.21 ❌ Двойной запуск Flask → 'Address already in use'
+
+**Когда:** после `pkill -f newton-api.py` запускаешь новый процесс, но старый не успел release port 8080.
+
+**Симптом:** новый процесс exit immediately: 'Address already in use, Port 8080 is in use by another program'.
+
+**Root cause:** TIME_WAIT socket state — после kill TCP-сокет может оставаться занятым 30-60 секунд.
+
+**Решение:**
+1. `pkill -9 -f newton-api.py` (SIGKILL, не SIGTERM)
+2. `sleep 10` (не 2-3)
+3. Проверить: `ss -tlnp | grep 8080` (должно быть пусто)
+4. Только тогда запускать новый процесс
+
+**Дата:** 17.06.2026.
+
+---
+
+### 3.22 ❌ n8n API key expired → 401 unauthorized (повтор §3.14)
+
+**Когда:** между сессиями (или в одной сессии через несколько часов) n8n API key становится невалидным.
+
+**Симптом:** `curl -H 'X-N8N-API-KEY: ...' https://seefeesnahurid.beget.app/api/v1/workflows` → `{"message":"unauthorized"}`, HTTP 401.
+
+**Root cause:** n8n API key хранится в Postgres, может сбрасываться при рестарте контейнера или при смене encryption key. SHORT-LIVED tokens (TTL < 1 day) тоже бывают.
+
+**Решение:**
+1. Запрашивать новый key у PM при 401
+2. НЕ хардкодить в скриптах — хранить в `/root/.mavis/secrets/n8n_api_key`
+3. **Backup:** если key недоступен — готовить patch (CAN-READ-ONLY mode) и просить PM закоммитить
+
+**Дата:** 17.06.2026 (повтор §3.14).
+
+---
+
+### 3.23 ❌ shim-pattern: lazy import → endpoint returns 503 (не 500) [FEATURE]
+
+**Когда:** merge-approach shim импортирует модуль, который не установлен (или сломан).
+
+**Симптом:** `/project/health` → 503 (или 200 с `import_error` в JSON). Endpoints → 503.
+
+**Root cause:** Lazy import в try/except: если ImportError, то `PROJECT_AVAILABLE = False`. Flask endpoint регистрируется, но при вызове проверяет `PROJECT_AVAILABLE` и возвращает 503.
+
+**Это FEATURE, не bug:** новый проект не ломает существующие endpoints, если его модуль сломан.
+
+**Решение (если хочется fail-fast):** убрать try/except в lazy import, чтобы ImportError падал сразу при startup. Но это anti-pattern для merge-approach.
+
+**Дата:** 17.06.2026 (sprint 6).
