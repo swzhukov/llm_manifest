@@ -1,6 +1,6 @@
 ---
 name: wiki-loader
-description: Загружает контекст среды пользователя (VPS Beget, n8n, Flask, Telegram, YandexGPT) и базу ошибок из github.com/swzhukov/llm_manifest в оперативную работу Mavis. Применяй когда задача про деплой, настройку сервисов, интеграции, дебаг автоматизаций, или явно упоминаются n8n / Flask / Telegram / YandexGPT / 1С. НЕ применять для: чистых вопросов про LLM-методологию (→ wiki/COUNCIL_RECOMMENDATIONS.md напрямую), research-задач (→ web_search), мелких one-shot правок.
+description: "Загружает контекст среды пользователя (VPS Beget, n8n, Flask, Telegram, YandexGPT) и базу ошибок из github.com/swzhukov/llm_manifest в оперативную работу Mavis. Применяй когда задача про деплой, настройку сервисов, интеграции, дебаг автоматизаций, или явно упоминаются n8n / Flask / Telegram / YandexGPT / 1С. НЕ применять для чистых вопросов про LLM-методологию (wiki/COUNCIL_RECOMMENDATIONS.md напрямую), research-задач (web_search), мелких one-shot правок."
 ---
 
 # wiki-loader

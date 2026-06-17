@@ -1,6 +1,6 @@
 ---
 name: gstack-team
-description: Multi-role виртуальная команда инженеров (CEO / Eng Manager / Designer / Reviewer / QA / Security / Release) для нетривиальных multi-file / архитектурных / pre-ship задач. Применяй когда задача явно 3+ файлов, требует архитектурного решения, нужен pre-ship аудит, или пользователь явно сказал «сделай», «собери», «ship it», «проведи аудит», «разбери проект». НЕ применять на: опечатки, rename, one-shot fix, чистые вопросы, research-задачи, установку самого gstack.
+description: "Multi-role виртуальная команда инженеров (CEO / Eng Manager / Designer / Reviewer / QA / Security / Release) для нетривиальных multi-file / архитектурных / pre-ship задач. Применяй когда задача явно 3+ файлов, требует архитектурного решения, нужен pre-ship аудит, или пользователь явно сказал «сделай», «собери», «ship it», «проведи аудит», «разбери проект». НЕ применять на опечатки, rename, one-shot fix, чистые вопросы, research-задачи, установку самого gstack."
 ---
 
 # GStack Team (реализация для Mavis)
