@@ -2079,3 +2079,41 @@ find /opt/beget/n8n/research-agent -name __pycache__ -exec rm -rf {} +
 **Sprint 9 урок:** в n8n connections должны отражать РЕАЛЬНЫЕ зависимости. Если Code-нода читает данные из двух узлов — оба узла должны быть в connections ДО этой ноды.
 
 **Дата:** 19.06.2026.
+
+
+### 3.37 ❌ Regex для YouTube URL не покрывал m.youtube.com — PM отправлял mobile link, workflow noop
+
+**Когда:** Sprint 9.1 (2026-06-20) — PM кинул `https://m.youtube.com/watch?v=Uq-3I4Xwj4M&feature=youtu.be` через @ZhukovsFirstBot. Бот НЕ ответил.
+
+**Симптом:** execution 841 завершился за 100ms с `success=true`, но workflow ничего не сделал — только webhook + parse + IF. Файл дайджеста не создан, TL;DR в Telegram не отправлен. PM: «ни хуя не изменилось».
+
+**Root cause:** regex в `Code — Parse Command + user_id`:
+```js
+/(https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)[0-9A-Za-z_-]{11}[^\s]*)/i
+```
+- `(?:www\.)?` — только **www**, без `m.`
+- `(?:watch\?v=|shorts\/|embed\/)` — нет `/v/` ID-префикса
+- Не поддерживает `?feature=`, `?si=`, `?t=` query params
+
+**Решение v6.0.12:** заменить сложный regex на серию простых `tok.match(/.../)`:
+```js
+const tokens = text.split(/\s+/);
+for (const tok of tokens) {
+  let m = tok.match(/^https?:\/\/youtu\.be\/([0-9A-Za-z_-]{11})/);  // youtu.be
+  if (m) { url = tok; break; }
+  m = tok.match(/^https?:\/\/(?:[\w-]+\.)?youtube\.com\/(?:watch\?v=|shorts\/|embed\/|v\/)([0-9A-Za-z_-]{11})/);  // youtube.com
+  if (m) { url = tok; break; }
+  m = tok.match(/^https?:\/\/piped\.video\/([0-9A-Za-z_-]{11})/);  // piped
+  if (m) { url = tok; break; }
+  m = tok.match(/^https?:\/\/(?:[\w-]+\.)?youtube\.com\/watch.*[?&]v=([0-9A-Za-z_-]{11})/);  // youtube.com watch?v= in any param position
+  if (m) { url = tok; break; }
+}
+```
+
+**Sprint 9.1 урок 1:** PM в Telegram чаще шлёт `m.youtube.com` ссылки (мобильный клиент). Regex должен покрывать все YouTube subdomains: `youtube.com`, `m.youtube.com`, `www.youtube.com`, `music.youtube.com`, `youtu.be`, `piped.video`.
+
+**Sprint 9.1 урок 2:** Сложные regex с `(?:opt1|opt2|opt3)` группами могут давать `Unmatched ')'` в JS parser n8n Code-ноды (Sprint 9 первый fix упал с этой ошибкой). Лучше делать несколько простых `if (tok.match(/.../))` — robust и читаемо.
+
+**Sprint 9.1 урок 3:** Если workflow завершился `success=true` но файл дайджеста не создан — значит IF-нода получила `false` ветку. Workflow не ошибка, просто cmd != 'fetch'. Проверять `IF cmd == fetch` в первую очередь.
+
+**Дата:** 20.06.2026.
