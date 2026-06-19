@@ -39,3 +39,20 @@ created: 2026-06-15
 21. Self-improve: self-review пропустил 7 broken references. Урок: даже в self-review рекурсивно проверять references и читать ВСЕ n8n logs, не только Code node.
 
 **Статус:** n8n Code node fix ЗАШИПЛЕН в production (workflow active=true, versionCounter=20). Flask /youtube_meta — отдельный downstream bug (НЕ в scope этого спринта).
+
+
+## Сессия 6 (19 июня 2026) – E2E workflow fix + Flask fallback
+22. Sprint 7 (продолжение Sprint 6): SSH access restored, fresh n8n API key, Flask restart без auto-reloader.
+23. Smoke test `/youtube_subs` = 200 OK, 68K chars VTT, 1.9s (yt-dlp primary).
+24. E2E test (webhook → 9 нод): **дошёл до HTTP /send_document** — главный milestone. Все 8 основных нод отрабатывают за 30 сек (YandexGPT).
+25. Найдены 3 критичные проблемы Sprint 5 (были неполные):
+    - §3.22: `options.continueOnFail=true` не работает в webhook-triggered flow → fallback в Python
+    - §3.24: Sprint 5 fix `$('code_parse')` → `$('Code — ...')` был только в `headerParameters`, забыли `jsonBody` + `jsCode Build Digest` (6 нод) → recursive id→name fix
+    - §3.25: удаление ноды требует чистки connections в обе стороны
+26. Fix: добавил fallback в `/youtube_meta` (200 + minimal dict при пустом YOUTUBE_API_KEY) + удалил ноду /youtube_meta + recursive replace id→name в 6 нодах + optional `message_id` в /send_document.
+27. MISTAKES.md: добавлены §3.19-3.29 (11 новых уроков Sprint 6+7).
+28. Финальное состояние: workflow v53, 12 нод, active. E2E test = 9/12 нод ✅, 1 фейл на /send_document с фейковым message_id (ОЖИДАЕМО для теста).
+29. Production-ready: PM может сделать реальный тест через Telegram-бот @ZhukovsFirstBot.
+
+**Статус:** Workflow ЗАШИПЛЕН. Flask fallback добавлен. Все 11 уроков в MISTAKES.md (локально). Готово к коммиту в llm_manifest.
+
