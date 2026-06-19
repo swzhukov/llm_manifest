@@ -1915,3 +1915,112 @@ clean = {k: v for k, v in data.items() if k in ALLOWED_TOP and v is not None}
 **В тестах через webhook-mock** нужно использовать `message_id: null` (см. 3.26) — чтобы пропустить reply и просто доставить документ.
 
 **Дата:** 19.06.2026.
+
+
+### 3.30 ❌ Hardcoded user_profile в workflow prompt — YandexGPT генерил чужие советы
+
+**Когда:** Sprint 8 (2026-06-19) — PM пожаловался, что action items в дайджесте "про долгосрочного портфельного инвестора" хотя он частный инвестор.
+
+**Симптом:** action items с subject = "долгосрочный портфельный инвестор", trigger = "при обсуждении внедрения новых технологий" — общие фразы, не относящиеся к PM.
+
+**Root cause:** в `Code — Build YandexGPT payload` (n8n) захардкожен placeholder:
+```js
+const user_profile_summary = {
+  markets: 'MOEX, СПБ Биржа',
+  style: 'долгосрочный портфельный',
+  ...
+};
+```
+Хотя в `user_profile` (SQLite KB) 25 строк с реальным профилем PM (Альфа-Инвестиции, ИИС-3, OFZ-26248, PIK, X5, MGN, LSR, goal 1M₽, horizon 5.5y, etc).
+
+**Решение v6.0.6:** убрать hardcode из Code-ноды, добавить server-side builder в Flask:
+```python
+# /yagpt_summarize endpoint
+def _build_investor_prompt(profile):
+    # Читает profile['name'], ['brokers'], ['accounts'], ['horizon'],
+    # ['goal_amount_rub'], ['current_savings_rub'], ['monthly_savings_rub'],
+    # ['preferred_instruments'], ['watchlist'], ['risk_tolerance'],
+    # ['favorite_youtube_channels']
+    # Возвращает жёсткий JSON-prompt с ПРИНУДИТЕЛЬНОЙ привязкой action items
+    # к watchlist/instruments/ИИС. Confidence понижается для неинвестиционных видео.
+```
+
+Workflow теперь передаёт `user_profile: {...}` в `/yagpt_summarize` через Code-ноду (читать из KB через `/user_profile` endpoint).
+
+**Sprint 8 урок:** **НЕ ХАРДКОДИТЬ** user-specific данные в n8n Code-ноде. Server-side prompt builder (Flask) — единственный правильный паттерн. Иначе при смене пользователя или его профиля придётся передеплоивать workflow.
+
+**Дата:** 19.06.2026.
+
+### 3.31 ❌ VTT auto-transcript cues кумулятивные — dedup по `==` не работает
+
+**Когда:** Sprint 8 — claims в HTML дублировались ("Коллеги, всем добрый день" повторялось 3 раза).
+
+**Симптом:** /render_digest выдаёт 30 claims, но половина — обрывки вроде "кто в зале и" (5 слов), "кто нас смотрит в трансляции" (3 слова), и они **разные** (не equal), но по сути cumulative (нарастающие).
+
+**Root cause:** YouTube auto-transcript выдаёт cues с накоплением:
+- cue 1: «Коллеги, всем добрый день, кто в зале и»
+- cue 2: «Коллеги, всем добрый день, кто в зале и кто нас смотрит в трансляции.»
+- cue 3: «кто нас смотрит в трансляции. А я расскажу опыт нашей компании, даже»
+
+Dedup по `==` ловит только identical, не cumulative.
+
+**Решение v6.0.8:** strip overlap в `vtt_to_claims`:
+```python
+# find longest suffix of prev_text that is a prefix of text
+overlap = 0
+for k in range(min(len(prev_text), len(text)), 4, -1):
+    if prev_text.endswith(text[:k]):
+        overlap = k
+        break
+if overlap > 4:
+    text = text[overlap:].strip()
+prev_text = (prev_text + ' ' + text).strip()[-200:]  # sliding window
+```
+
+**Sprint 8 урок:** для YouTube auto-transcript **всегда** strip cumulative overlap, не equal-compare.
+
+**Дата:** 19.06.2026.
+
+### 3.32 ❌ Patch Flask endpoint с NoneType guard — None + str = TypeError
+
+**Когда:** Sprint 8 — после patch vtt_to_claims с `prev_text = (prev_text + ' ' + text)` упало `TypeError: unsupported operand type(s) for +: 'NoneType' and 'str'`.
+
+**Симптом:** endpoint /youtube_subs возвращает 500 yt-dlp_error msg: "unsupported operand type(s) for +: 'NoneType' and 'str'".
+
+**Root cause:** добавил cumulative overlap check, но `prev_text` инициализирован `None`. При первой итерации `prev_text + ' '` падает.
+
+**Решение:**
+```python
+prev_text = None
+for ...:
+    ...
+    if prev_text and text == prev_text: continue
+    if prev_text:
+        prev_text = (prev_text + ' ' + text).strip()[-200:]
+    else:
+        prev_text = text
+```
+
+**Sprint 8 урок:** после добавления `if X: X = X + Y` — ВСЕГДА добавить `else: X = Y` (или init `X = ''` вместо `None`).
+
+**Дата:** 19.06.2026.
+
+### 3.33 ❌ Werkzeug lazy import — изменения в utils.py не подтягиваются без очистки __pycache__
+
+**Когда:** Sprint 8 — после patch vtt_to_claims Flask продолжал возвращать старый формат без claims.
+
+**Симптом:** файл utils.py обновлён, syntax OK, но endpoint возвращает данные как до patch.
+
+**Root cause:** Flask с `FLASK_DEBUG=0` не перезагружает модули. Python кэширует скомпилированные .pyc в `__pycache__/`.
+
+**Решение:** после patch ВСЕГДА:
+```bash
+pkill -9 -f newton-api
+sleep 10
+find /opt/beget/n8n/research-agent -name __pycache__ -exec rm -rf {} +
+# затем запустить заново
+```
+
+**Sprint 8 урок:** даже с FLASK_DEBUG=0 — кэш модулей сохраняется между запусками. rm -rf __pycache__ обязателен при hot-patch.
+
+**Дата:** 19.06.2026.
