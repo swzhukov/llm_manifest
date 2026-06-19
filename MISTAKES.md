@@ -1653,85 +1653,265 @@ git remote set-url origin git@github.com:<USER>/<REPO>.git
 **Основа:** ERRORS_AND_LESSONS.md (Капитал, 11 секций) + MISTAKES.md (research-agent, 15 секций) — объединены в 17 секций, удалены дубли, добавлены уникальные уроки.
 **Следующая ревизия:** при появлении новой категории ошибок или нового environment.
 
-### 3.19 ❌ YOUTUBE_API_KEY not set → /youtube_meta 500 (downstream bug)
+### 3.16 ❌ Webhook node output wraps body — `.json.message` vs `.json.body.message`
 
-**Когда:** Flask endpoint /youtube_meta вызывается без YOUTUBE_API_KEY в .env.
+**Когда:** используешь Webhook node (не Telegram Trigger) и читаешь входящий POST в Code node.
 
-**Симптом:** `{"error":"YOUTUBE_API_KEY not set"}`, HTTP 500.
+**Симптом:** Code node: `const msg = $('webhook').first().json.message` → `undefined`, downstream падает.
 
-**Root cause:** /youtube_meta endpoint требует YouTube Data API v3 (YOUTUBE_API_KEY) для парсинга meta. Если ключ пуст (PM сознательно — не нужна quota API, т.к. yt-dlp уже всё даёт через /youtube_subs), endpoint падает.
+**Root cause:** Webhook node output: `{headers, params, query, body, webhookUrl, executionMode}`. Тело POST лежит в `json.body`, не в корне.
 
-**Решение — Вариант A** (минимальный, n8n workflow): добавить `continueOnFail: true` на HTTP /youtube_meta + fallback в Code node:
-```javascript
-title: meta.title || (subs.meta && subs.meta.title) || 'Без названия',
+**Решение:** `$('webhook_xxx').first().json.body.message` (не `.json.message`).
+
+**Дата:** 17.06.2026 (research-agent workflow fix).
+
+---
+
+### 3.17 ❌ `$()` references в n8n resolve by NAME, not ID
+
+**Когда:** переименовал Code node (`name` изменилось, `id` остался), забыл обновить references в других нодах.
+
+**Симптом:** HTTP нода падает: `Referenced node doesn't exist`. Execution error.
+
+**Root cause:** n8n expressions `$('name')` резолвятся по `node.name` (display), не по `node.id`.
+
+**Решение:** при переименовании ноды:
+1. Update connections (top-level) — известная грабли §3.6
+2. **Update references** в jsonBody/jsCode других нод — **ЗАБЫВАЮТ**
+3. **Проверить через:** `grep -E "\\\$\\('OLD_NAME'\\)" wf.json` ДО PUT
+
+**Lesson:** переименование ноды = 2 операции, не 1.
+
+**Дата:** 17.06.2026.
+
+---
+
+### 3.18 ❌ `dict.replace(OLD, NEW)` заменяет только в ОДНОМ поле, не рекурсивно
+
+**Когда:** фиксишь references в ноде через `params['key'].replace(OLD, NEW)`, но у ноды несколько string полей.
+
+**Симптом:** часть нод починена, часть — нет. Workflow error persists.
+
+**Root cause:** `dict[key].replace()` заменяет только в этом поле, остальные поля parameters (jsonBody, headerParameters, url, etc.) не трогает.
+
+**Решение:** **recursive replace:**
+```python
+def fix_recursive(obj, OLD, NEW):
+    if isinstance(obj, dict):
+        return {k: fix_recursive(v, OLD, NEW) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [fix_recursive(v, OLD, NEW) for v in obj]
+    elif isinstance(obj, str) and OLD in obj:
+        return obj.replace(OLD, NEW)
+    return obj
 ```
-Работает даже если /youtube_meta упал — берёт из subs.meta (yt-dlp).
 
-**Решение — Вариант B** (лучше долгосрочно): fix /youtube_meta endpoint чтобы fallback на yt-dlp если YOUTUBE_API_KEY не задан.
-
-**Дата:** 17.06.2026 (sprint 6).
-
----
-
-### 3.20 ❌ Werkzeug auto-reloader → Flask рестарт каждые 5 сек
-
-**Когда:** Flask запущен с debug=True (через `app.run(debug=True)` или `FLASK_DEBUG=1`).
-
-**Симптом:** api.log показывает 'endpoints registered OK' каждые 5 секунд. In-memory state теряется при каждом рестарте. n8n executions зависают.
-
-**Root cause:** Werkzeug auto-reloader следит за .py файлами и перезапускает процесс при mtime change.
-
-**Решение:** `FLASK_DEBUG=0 nohup python3 newton-api.py`. Или в коде: `app.run(host='0.0.0.0', port=8080, debug=False)`.
+**Применить к каждой ноде:** `n['parameters'] = fix_recursive(n['parameters'], OLD, NEW)`.
 
 **Дата:** 17.06.2026.
 
 ---
 
-### 3.21 ❌ Двойной запуск Flask → 'Address already in use'
+### 3.19 ❌ Werkzeug auto-reloader запускает Flask дважды
 
-**Когда:** после `pkill -f newton-api.py` запускаешь новый процесс, но старый не успел release port 8080.
+**Симптом:** Flask работает, но в `ps aux` ДВА процесса, порт 8080 занимает левый PID. После `pkill` следующий старт находит занятый порт.
 
-**Симптом:** новый процесс exit immediately: 'Address already in use, Port 8080 is in use by another program'.
+**Root cause:** если `FLASK_DEBUG=1` (или `WERKZEUG_DEBUG_PIN` ставится через env), Werkzeug запускает reloader process, который форкает worker. При `pkill -9 -f` убивается только один из них, второй остаётся.
 
-**Root cause:** TIME_WAIT socket state — после kill TCP-сокет может оставаться занятым 30-60 секунд.
+**Решение:** всегда стартовать Flask как:
+```bash
+FLASK_DEBUG=0 nohup python3 newton-api.py > api.log 2>&1 &
+```
 
-**Решение:**
-1. `pkill -9 -f newton-api.py` (SIGKILL, не SIGTERM)
-2. `sleep 10` (не 2-3)
-3. Проверить: `ss -tlnp | grep 8080` (должно быть пусто)
-4. Только тогда запускать новый процесс
+**Проверка:** `ps -ef | grep newton-api | grep -v grep` должен показать ровно 1 процесс.
 
-**Дата:** 17.06.2026.
-
----
-
-### 3.22 ❌ n8n API key expired → 401 unauthorized (повтор §3.14)
-
-**Когда:** между сессиями (или в одной сессии через несколько часов) n8n API key становится невалидным.
-
-**Симптом:** `curl -H 'X-N8N-API-KEY: ...' https://seefeesnahurid.beget.app/api/v1/workflows` → `{"message":"unauthorized"}`, HTTP 401.
-
-**Root cause:** n8n API key хранится в Postgres, может сбрасываться при рестарте контейнера или при смене encryption key. SHORT-LIVED tokens (TTL < 1 day) тоже бывают.
-
-**Решение:**
-1. Запрашивать новый key у PM при 401
-2. НЕ хардкодить в скриптах — хранить в `/root/.mavis/secrets/n8n_api_key`
-3. **Backup:** если key недоступен — готовить patch (CAN-READ-ONLY mode) и просить PM закоммитить
-
-**Дата:** 17.06.2026 (повтор §3.14).
+**Дата:** 18.06.2026.
 
 ---
 
-### 3.23 ❌ shim-pattern: lazy import → endpoint returns 503 (не 500) [FEATURE]
+### 3.20 ❌ n8n API key expiry — short-lived (8-10 дней)
 
-**Когда:** merge-approach shim импортирует модуль, который не установлен (или сломан).
+**Симптом:** n8n API возвращает 401 Unauthorized на все endpoints.
 
-**Симптом:** `/project/health` → 503 (или 200 с `import_error` в JSON). Endpoints → 503.
+**Root cause:** API keys в n8n 2.17.7 имеют TTL (на этом инстансе ~10 дней с момента создания). После — silent death, даже если status code = 401.
 
-**Root cause:** Lazy import в try/except: если ImportError, то `PROJECT_AVAILABLE = False`. Flask endpoint регистрируется, но при вызове проверяет `PROJECT_AVAILABLE` и возвращает 503.
+**Решение:**
+1. Создавать API key через `POST /api/v1/api-keys` с явной датой истечения или 0 (бессрочный)
+2. Хранить в `/root/.mavis/secrets/n8n_api_key` (mode 600, NEVER commit)
+3. Когда упал 401 — спросить PM свежий ключ или пересоздать через UI
 
-**Это FEATURE, не bug:** новый проект не ломает существующие endpoints, если его модуль сломан.
+**Дата:** 19.06.2026.
 
-**Решение (если хочется fail-fast):** убрать try/except в lazy import, чтобы ImportError падал сразу при startup. Но это anti-pattern для merge-approach.
+---
 
-**Дата:** 17.06.2026 (sprint 6).
+### 3.21 ❌ shim-pattern: lazy import в Python приводит к N копиям логирования
+
+**Симптом:** `api.log` показывает `[research] endpoints registered OK` несколько раз подряд (5-10 загрузок за 10 сек).
+
+**Root cause:** Werkzeug reloader (см. 3.19) форкает процессы, каждый из которых заново импортирует модули и регистрирует endpoints. На одном процессе такого нет, на reloader-mode — да.
+
+**Решение:** использовать `FLASK_DEBUG=0` (см. 3.19), либо делать endpoint registration idempotent (проверка `if '/foo' not in app.url_map`).
+
+**Дата:** 19.06.2026.
+
+---
+
+### 3.22 ❌ n8n `options.continueOnFail=true` НЕ спасает HTTP-ноду в webhook-triggered flow
+
+**Симптом:** HTTP-нода возвращает 500 (например, `YOUTUBE_API_KEY not set`), `options.continueOnFail: true` стоит, но workflow падает.
+
+**Root cause:** в n8n 2.17.7 поле `options.continueOnFail` (HTTP Request node) работает ТОЛЬКО в Schedule/Manual triggers, но НЕ в Webhook-triggered flows. В webhook mode `error.level=warning`, но workflow overall = error.
+
+**Решение:** если 500 ожидаем — фиксить в Python (`return 200 + fallback dict`), а не полагаться на continueOnFail.
+
+**Альтернатива:** `onError: 'continueRegularOutput'` на уровне ноды — НО это поле read-only через REST PUT в 2.17.7 (см. 3.23).
+
+**Дата:** 19.06.2026.
+
+---
+
+### 3.23 ❌ n8n REST API PUT отбрасывает `onError` (400 additional properties)
+
+**Симптом:** PUT `/api/v1/workflows/{id}` с `node.onError = 'continueRegularOutput'` → `{"message":"request/body must NOT have additional properties"}`.
+
+**Root cause:** n8n 2.17.7 REST schema для PUT `workflows/{id}` имеет строгий whitelist полей для каждой ноды. `onError` не входит в whitelist, хотя UI его показывает. Аналогично для `settings.onError`.
+
+**Решение:**
+1. Не пытаться выставлять `onError` через API — это UI-only в 2.17.7
+2. Вместо этого — graceful-fallback в Python endpoint (200 + minimal dict)
+3. Либо — split workflow с IF-узлом, который роутит error на другую ветку
+
+**Дата:** 19.06.2026.
+
+---
+
+### 3.24 ❌ n8n `$('id_based_ref')` с id существующей ноды → "Referenced node doesn't exist"
+
+**Симптом:** в Code-ноде `const meta = $('http_meta').first().json` → execution error: `Cannot assign to read only property 'name' of object 'Error: Referenced node doesn't exist'`.
+
+**Root cause:** в n8n 2.17.7 `$(...)` reference ищет по `node.name` (display name), НЕ по `node.id` (internal id). Даже если id существует, n8n его не находит.
+
+**Решение:** ВСЕГДА использовать `node.name` в `$()`:
+```js
+// ❌ WRONG: $('http_meta')  // id-based
+// ✅ RIGHT: $('HTTP /youtube_meta')  // name-based
+```
+
+**Как массово починить:** рекурсивный replace id → name для всех nodes в `data['nodes']`:
+```python
+ID_TO_NAME = {
+    'http_meta': 'HTTP /youtube_meta',
+    'http_subs': 'HTTP /youtube_subs',
+    'code_build': 'Code — Build YandexGPT payload',
+    # ... (build from GET /workflows/{id})
+}
+def fix_refs(obj):
+    if isinstance(obj, str):
+        return re.sub(r"\$\('([^']+)'\)",
+            lambda m: f"$('{ID_TO_NAME.get(m.group(1), m.group(1))}')" if m.group(1) in ID_TO_NAME else m.group(0),
+            obj)
+    if isinstance(obj, dict): return {k: fix_refs(v) for k, v in obj.items()}
+    if isinstance(obj, list): return [fix_refs(x) for x in obj]
+    return obj
+```
+
+**Sprint 5 фикс был неполный** — покрыл `headerParameters`, но забыл `jsonBody` в `HTTP /yagpt_summarize` и `Code — Build Digest`. Sprint 6 починил это разом через recursive fix.
+
+**Дата:** 19.06.2026.
+
+---
+
+### 3.25 ❌ Удаление ноды из workflow требует удаления из connections в ОБЕ стороны
+
+**Симптом:** удалил `HTTP /youtube_meta` из `data['nodes']`, оставил connection `IF cmd == fetch → HTTP /youtube_meta` → PUT 200, но при execution n8n ругается "Node not found".
+
+**Root cause:** connections — отдельный dict, и при PUT если нода удалена, но остались references в connections (incoming и outgoing), n8n не отбрасывает их автоматически. Execution падает на несуществующей ноде.
+
+**Решение:** при удалении ноды — ОБЯЗАТЕЛЬНО чистить connections:
+```python
+# Удалить incoming (X → удалённая)
+if 'IF cmd == fetch' in conns:
+    for branch in conns['IF cmd == fetch'].get('main', []):
+        branch[:] = [t for t in branch if t.get('node') != 'HTTP /youtube_meta']
+# Удалить outgoing (удалённая → Y)
+if 'HTTP /youtube_meta' in conns:
+    del conns['HTTP /youtube_meta']
+```
+
+**Дата:** 19.06.2026.
+
+---
+
+### 3.26 ❌ Telegram API "message to be replied not found" при фейковом message_id
+
+**Симптом:** `POST /sendDocument` с `reply_to_message_id=999` (тестовое) → 400 Bad Request: "message to be replied not found".
+
+**Root cause:** Telegram API строго проверяет существование reply-target. Если PM генерирует webhook с фейковым `message_id` для теста workflow — `/send_document` упадёт.
+
+**Решение:** в n8n jsonBody сделать `message_id` optional:
+```js
+message_id: ($('Code — Parse').first().json.message_id || null)
+```
+И в Flask endpoint:
+```python
+if message_id:
+    payload['reply_to_message_id'] = message_id
+```
+
+Когда `message_id == null` (тест) — Telegram получает чистый POST без reply, message доставляется. Когда message_id реальный (от Telegram-бота) — reply прикрепляется.
+
+**Дата:** 19.06.2026.
+
+---
+
+### 3.27 ❌ Flask endpoint возвращает 500 при `YOUTUBE_API_KEY=""` (conscious empty)
+
+**Симптом:** PM сознательно оставил `YOUTUBE_API_KEY=` пустым (YTScam-free, IP-based block, yt-dlp достаточно), но Flask `/youtube_meta` возвращает 500 `"YOUTUBE_API_KEY not set"`. Workflow падает.
+
+**Root cause:** if-block `if not api_key: return 500` не различает "ключ есть, но YTScam" от "ключ сознательно пустой".
+
+**Решение:** в Flask возвращать 200 с минимальным dict (fallback) при пустом ключе:
+```python
+if not api_key:
+    return jsonify({
+        'video_id': video_id,
+        'title': None,
+        'meta_source': 'fallback_no_api_key',
+        # ... остальные поля null
+    })  # status 200
+```
+Downstream Code-нода использует fallback chain: `title || (subs.meta && subs.meta.title) || 'Без названия'`.
+
+**Дата:** 19.06.2026.
+
+---
+
+### 3.28 ❌ `description: null` в workflow PUT body → 400 description must be string
+
+**Симптом:** при копировании workflow body из `GET /workflows/{id}` сохраняются все поля включая `description: None` (не строка). `PUT` → `request/body/description must be string`.
+
+**Root cause:** n8n schema для PUT требует `description: string`, не `null`.
+
+**Решение:** при подготовке PUT body фильтровать `None` значения:
+```python
+ALLOWED_TOP = {'name', 'nodes', 'connections', 'settings', 'description'}
+clean = {k: v for k, v in data.items() if k in ALLOWED_TOP and v is not None}
+```
+
+**Дата:** 19.06.2026.
+
+---
+
+### 3.29 ❌ Telegram "message to be replied not found" — ПРАВИЛЬНЫЙ flow: reply на message бота
+
+**Контекст:** в Sprint 6 PM пожаловался, что 709/710 execution упали на `/send_document`. На самом деле это была **ОЖИДАЕМАЯ ошибка** — фейковый message_id 207/999 не существует в Telegram.
+
+**Правильная архитектура (production):**
+1. Telegram user → bot message (real message_id в Telegram)
+2. Webhook → n8n → Code-parse → subs → yandexgpt → build_digest → render → send_document
+3. `/send_document` с `reply_to_message_id = real_message_id` → reply на сообщение пользователя
+4. Success.
+
+**В тестах через webhook-mock** нужно использовать `message_id: null` (см. 3.26) — чтобы пропустить reply и просто доставить документ.
+
+**Дата:** 19.06.2026.
