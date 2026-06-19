@@ -2024,3 +2024,58 @@ find /opt/beget/n8n/research-agent -name __pycache__ -exec rm -rf {} +
 **Sprint 8 урок:** даже с FLASK_DEBUG=0 — кэш модулей сохраняется между запусками. rm -rf __pycache__ обязателен при hot-patch.
 
 **Дата:** 19.06.2026.
+
+
+### 3.34 ❌ n8n HTTP Request jsonBody не передаёт поля автоматически — нужно явно прописать в expression
+
+**Когда:** Sprint 9 (2026-06-19) — патчил jsonBody в HTTP /yagpt_summarize чтобы передавать user_profile.
+
+**Симптом:** Code-нода Build YandexGPT payload возвращает {text, system, user_profile, timeline, ...}, но jsonBody = `={{ { text: ..., system: ... } }}` — только text и system. user_profile НЕ передаётся в /yagpt_summarize, Flask fallback generic prompt.
+
+**Root cause:** jsonBody в n8n HTTP Request ноде — это STRING с выражением. Все поля которые нужны в Flask — нужно **явно** перечислить в jsonBody expression.
+
+**Решение:**
+```js
+// v6.0.10 jsonBody
+={{
+  {
+    text: $('Code — Build YandexGPT payload').first().json.subs_text,
+    system: $('Code — Build YandexGPT payload').first().json.system,
+    user_profile: $('Code — Build YandexGPT payload').first().json.user_profile,
+    timeline: $('Code — Build YandexGPT payload').first().json.timeline,
+    model: 'yandexgpt-lite',
+    max_tokens: 2000,
+    temperature: 0.3
+  }
+}}
+```
+
+**Sprint 9 урок:** после изменения Code-ноды (добавил поле в output) — ОБЯЗАТЕЛЬНО проверить jsonBody следующей HTTP-ноды, иначе поле молча отбрасывается и Flask получает неполные данные.
+
+**Дата:** 19.06.2026.
+
+### 3.35 ❌ Code-нода в n8n не имеет async HTTP — для получения профиля из БД нужен отдельный HTTP Request нод
+
+**Когда:** Sprint 9 — хотел передать user_profile из KB в /yagpt_summarize.
+
+**Симптом:** нельзя вызвать `/user_profile` напрямую из Code-ноды, она не умеет async HTTP.
+
+**Решение:** добавить HTTP /user_profile Request ноду В WORKFLOW между `HTTP /youtube_subs` и `Code — Build YandexGPT payload`. Дальше Code-нода читает через `$('HTTP /user_profile').first().json.profile`.
+
+**Sprint 9 урок:** для динамических данных из внешних источников в Code-ноде n8n — нужна отдельная HTTP Request нода. Code-нода может только читать данные из ПРЕДЫДУЩИХ нод через `$()`.
+
+**Дата:** 19.06.2026.
+
+### 3.36 ❌ Race condition: HTTP /youtube_subs и HTTP /user_profile параллельно — Code-нода получает данные когда subs ещё не готов
+
+**Когда:** Sprint 9 — пытался запустить subs и profile параллельно через `IF → [subs, profile]` (idx 0).
+
+**Симптом:** execution 744 упал на `Node 'HTTP /youtube_subs' hasn't been executed` (subs ещё не успел отработать, а Code-нода уже пытается прочитать).
+
+**Решение:** соединить последовательно: `IF → subs → profile → Build YandexGPT payload`. Хотя оба HTTP-вызова независимы, n8n требует чтобы зависимости были явно в connections.
+
+**Альтернатива:** оставить параллельно но в Code-ноде проверить `if ($('HTTP /youtube_subs').first())` — но это hack и не всегда работает.
+
+**Sprint 9 урок:** в n8n connections должны отражать РЕАЛЬНЫЕ зависимости. Если Code-нода читает данные из двух узлов — оба узла должны быть в connections ДО этой ноды.
+
+**Дата:** 19.06.2026.
