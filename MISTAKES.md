@@ -2408,3 +2408,32 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Sprint 12.3 урок 6 (тестируй от PM, не от curl):** PM пожаловался — workflow не работал. На curl-тестах всё ОК. Разница: **curl fake message_id ломает Telegram API**, реальный message_id работает. Тест: **убери все `message_id` из нод workflow**. PM получит файл без reply, но это надёжно.
 
 **Дата:** 20.06.2026.
+
+
+### 3.49 ✅ Sprint 13 — Media files (voice/audio/video) → Newton → digest (v6.0.19)
+
+**Когда:** 2026-06-20 — PM попросил "добавляем, чтобы мог медиафайлы Ньютоном тебе обрабатывать".
+
+**Что добавлено (v6.0.19):**
+1. **Code — Parse Command v6.0.19:** детектирует `msg.voice`, `msg.audio`, `msg.video`, `msg.video_note`, `msg.document` (audio/video MIME). Возвращает `cmd: 'media'` + `media: {file_id, mime, kind, file_name, file_size, duration}`.
+2. **IF cmd == media** (параллельно с IF fetch/channel/help) — направляет на media flow.
+3. **HTTP /telegram_download** — берёт file_id, скачивает через getFile + getFileURL API, сохраняет в `/opt/beget/n8n/newton-tmp/` с правильным расширением. (Endpoint уже был с Sprint 9, я просто переиспользовал.)
+4. **Code — Build media notice** + **HTTP /send_message (media notice)** — уведомляет PM "🎙 Обрабатываю голосовое (185 сек, 543 KB) через Newton..."
+5. **HTTP /transcribe** — вызывает `newton transcribe -e v3`. (Sprint 9 endpoint, переиспользован.)
+6. **Code — Build media YandexGPT payload** — берёт text из transcribe, оборачивает в формат для существующего pipeline (`/user_profile` → `/yagpt_summarize` → ...).
+7. **IF media_empty** — если text пустой, шлёт ❌ "не удалось обработать". Иначе идёт в основной pipeline (схождение с HTTP /youtube_subs через merge).
+8. **Code — Media empty handler** + **HTTP /send_message (media empty)** — error path.
+
+**Sprint 13 урок 1 (Flask + nohup vs systemd):** При патче Flask с systemd service systemd пишет "Address already in use" если старый процесс из nohup ещё держит порт. Решение: `kill <old_pid>` перед `systemctl restart`. Или ВСЕГДА использовать systemd, никогда nohup.
+
+**Sprint 13 урок 2 (n8n HTTP nodes должны ВСЕГДА посылать X-Telegram-User-Id):** Если endpoint требует `X-Telegram-User-Id: 261540559` (для ALLOWED_TELEGRAM_USERS), workflow нода должна иметь `sendHeaders: true` + `headerParameters: [{name: "X-Telegram-User-Id", value: "261540559"}]`. Иначе 403 unauthorized.
+
+**Sprint 13 урок 3 (curl test file_id ≠ real PM file_id):** Я отправил voice PM через `sendVoice` API, получил file_id. Но для теста workflow через curl я не могу использовать file_id, загруженный ботом, для PM'а. Telegram API отвечает 400 "invalid file_id". Real PM voice работает, curl test — нет.
+
+**Sprint 13 урок 4 (Sprint 13 урок 4 — 1.mp3 уже есть на сервере):** Я нашёл `/opt/beget/n8n/1.mp3` (555312 байт, Newton test audio с диаризацией). Использовал как тестовое аудио для sendVoice. Получил file_id `AwACAgIAAxkDAAO-aja6o4v1mth` (185 сек opus).
+
+**Sprint 13 урок 5 (media flow сходится с video flow в HTTP /user_profile):** Оба пути (media → yagpt_summarize) и (fetch → yagpt_summarize) сходятся в HTTP /user_profile. n8n автоматически merge'ит inputs от разных sources. Решение: не нужен отдельный node, n8n merge'ит по shared destination.
+
+**Sprint 13 урок 6 (Newton v3 — diarization):** `newton transcribe -e v3` поддерживает диаризацию (разделение спикеров). Выдаёт формат `[00:00:00.000 - 00:00:10.122]: текст спикера`. Это даёт больше контекста для YandexGPT (кто говорит).
+
+**Дата:** 20.06.2026.
