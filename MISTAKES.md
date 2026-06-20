@@ -2167,3 +2167,29 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Recovery:** PM, активируй workflow id `4C4cqkAKBqk5cye6` через n8n UI → toggle ON. После этого webhook `/webhook/4C4cqkAKBqk5cye6` начнёт работать. URL для Telegram: `https://seefeesnahurid.beget.app/webhook/4C4cqkAKBqk5cye6`.
 
 **Дата:** 20.06.2026.
+
+
+### 3.40 ❌ n8n API key editor (mavis-deploy-2026-06) НЕ МОЖЕТ activate workflow → webhook никогда не зарегистрируется
+
+**Когда:** Sprint 10 (2026-06-20) — PM дал n8n API key `mavis-deploy-2026-06` (первая строка = human-readable label, вторая строка = JWT). Оказалось, это **editor** роль, не owner.
+
+**Симптом:** POST `/workflows` создаёт workflow (active=False в response, или active=True но n8n не регистрирует webhook). GET `/webhook/{path}` всегда 404. POST `/webhook/{path}` возвращает 500 "Error in workflow" — НЕ 404, что значит webhook ЗАРЕГИСТРИРОВАН, но падает в первом ноде.
+
+**Корневая причина:** Editor роль не имеет permission `workflow:publish` или `workflow:activate`. В логах n8n: `User attempted to activate a workflow without permissions`. Webhook registration требует публикации workflow.
+
+**Подтверждение:** Создал МИНИМАЛЬНЫЙ workflow (webhook → Code с `return [{json: {ok: true}}]`). Активировал через API. POST /webhook/test-minimal → 500 "Error in workflow". То же самое.
+
+**Sprint 10 урок 1:** Активация workflow через API НЕ РАБОТАЕТ с editor ключом, даже если response показывает active=true. webhook registry не обновляется.
+
+**Sprint 10 урок 2:** "Error in workflow" HTTP 500 ≠ 404. 500 = webhook зарегистрирован, но нода упала. 404 = webhook НЕ зарегистрирован (workflow не активирован).
+
+**Sprint 10 урок 3:** Минимальный workflow 2 нод (webhook + return OK) тоже 500. Это значит проблема НЕ в моих нодах, а в том, что workflow не публикуется.
+
+**Sprint 10 урок 4:** PM должен дать OWNER API key (с правом publish) для полного цикла. Или делать activate через n8n UI вручную.
+
+**Recovery plan:**
+- PM либо даёт owner API key
+- Или PM активирует workflow `zDJ0XpXNv6DYyuTX` через UI: toggle ON
+- JSON для импорта: `/workspace/backup/workflows/research-agent-v6.0.13.json` (id=`4C4cqkAKBqk5cye6` уже удалён, новый zDJ0...)
+
+**Дата:** 20.06.2026.
