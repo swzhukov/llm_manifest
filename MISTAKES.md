@@ -2279,3 +2279,35 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Sprint 10.5 урок 4:** Render должен принимать ОБА формата: list of strings (YandexGPT) и list of dicts (VTT). Иначе normalize в render.
 
 **Дата:** 20.06.2026.
+
+
+### 3.45 ✅ Sprint 11 — multi-platform support (YouTube + Rutube)
+
+**Когда:** 2026-06-20 — PM попросил расширить на другие площадки кроме YouTube.
+
+**Добавлено (v6.0.16):**
+1. **utils.py:** `extract_video_id(url)` → returns `(platform, id)`. Поддержка YouTube + Rutube (`rutube.ru/video/<32hex>`).
+2. **/youtube_subs:** мультиплатформенный endpoint. Принимает `url` или `video_id+platform`. yt-dlp сам определяет экстрактор. Возвращает `platform: 'rutube' | 'youtube'`.
+3. **subtitles handling:** проверяет И `subtitles[lang]` (Rutube SRT), И `requested_subtitles[lang]` (YouTube VTT). Принимает SRT (тот же формат минус WEBVTT заголовок).
+4. **gzip support:** `Accept-Encoding: gzip` + `requests` auto-decompress.
+5. **workflow Code — Parse Command:** добавлен rutube regex: `https?://(?:[\w-]+\.)?rutube\.ru/(?:video|play/embed)/([0-9a-f]{32})`.
+6. **workflow text slice:** 5000 → 8000 chars (rutube видео часто 6000-8000).
+
+**Тест на реальном rutube видео** (Дубинский, «Рубль или валюта. Почему IMOEX падает. Заработать на Мосбирже: Идеи Портфели», 11 мин):
+- Execution 1051 status=success
+- 4 буллетов summary (Сбербанк, ВТБ, инфляция, рубли)
+- 5 тезисов от YandexGPT (НЕ сырой VTT)
+- 3 actions по портфелю
+
+**Sprint 11 урок 1:** yt-dlp поддерживает 2000+ экстракторов, но для каждого нужно проверить:
+- Где subtitles (subtitles vs requested_subtitles vs automatic_captions)
+- Формат (vtt vs srt — парсер VTT работает на обоих)
+- Gzip (rutube субтитры gzip-compressed)
+
+**Sprint 11 урок 2:** Rutube отдаёт `subtitles[lang]` как list of dicts (track1, track2), а YouTube `requested_subtitles[lang]` как single dict. Нужно обрабатывать ОБА формата.
+
+**Sprint 11 урок 3:** 5000 chars в Code — Build YandexGPT payload хватает для YouTube (где VTT уже очищен от дубликатов), но НЕ хватает для Rutube (где SRT без dedup). 8000 chars покрывает оба случая.
+
+**Sprint 11 урок 4:** Поле `categories` у Rutube = list of strings, не dict. Если где-то в коде `_meta.get('categories').get('something')` — упадёт. Нужно проверять `isinstance(value, dict)`.
+
+**Дата:** 20.06.2026.
