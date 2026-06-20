@@ -2374,3 +2374,37 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Sprint 12.2 урок 6 (тестируй от PM, не от curl):** curl message_id не существует в Telegram. Telegram API отвечает 400. Workflow error. PM не получает ничего. Урок: либо не передавай message_id в curl test, либо используй реальный message_id от webhook'а.
 
 **Дата:** 20.06.2026.
+
+
+### 3.48 ✅ Sprint 12.3 — Реальная проверка от PM (v6.0.18 FINAL)
+
+**Когда:** 2026-06-20 — после жалобы PM "вообще ничего не работает". Протестировал **реальный** flow с Telegram, нашёл 6 регрессий.
+
+**Найденные регрессии (workflow error ВСЕГДА 500):**
+1. **`HTTP /send_message` + `message_id: null` или curl fake id** → "Bad Request: message to be replied not found". Workflow error. Telegram 500.
+2. **`HTTP /send_document` + `message_id` from curl** → 400. Workflow error. Telegram 500.
+3. **`YandexGPT` отдаёт `confidence: "средняя"`** (string). SQL binding падает с "type 'list' is not supported" / "could not convert to float".
+4. **`extract_video_id` returns tuple** но `kb_save` ожидает string → `external_id` становится list → SQL binding error.
+5. **`/youtube_subs` reconstruct URL `https://youtu.be/{video_id}` с tuple** → "Unsupported URL".
+6. **`FLASK_DEBUG=0 + nohup` НЕ загружает .env** → все endpoints 403 unauthorized. Решение: **systemd service** с `EnvironmentFile=`.
+
+**Sprint 12.3 фиксы:**
+1. **Убрал `message_id` из всех `send_message`/`send_document` нод.** PM получит файл + TL;DR сообщение **без reply** на исходное сообщение. Это не критично — главное файл пришёл.
+2. **Added `Respond to Webhook` ноду** с `responseMode: 'responseNode'`. Workflow ВСЕГДА возвращает 200 OK в Telegram, даже если error в нодах. Это критично: Telegram не накапливает pending при retry.
+3. **`/kb_save`: конвертация confidence string → float** (`высокая`→0.9, `средняя`→0.7, `низкая`→0.5).
+4. **`/youtube_subs`: после `platform, video_id = extract_video_id()`** добавлен `if isinstance(video_id, (list, tuple)): video_id = video_id[1]`. Также возвращается `platform` в response.
+5. **systemd `/etc/systemd/system/newton-api.service`** с `EnvironmentFile=/opt/beget/n8n/.env`. `systemctl restart newton-api`. Loaded, active (running).
+
+**Sprint 12.3 урок 1 (Telegram Webhook = 500 vs 200):** если workflow падает с error, n8n возвращает 500 в Telegram. Telegram копит pending и ретраит каждые 5 сек. Если 5 retry 500 — Telegram отключает webhook. Решение: ВСЕГДА ставить `Respond to Webhook` ноду в конец flow. Тогда Telegram видит 200 OK.
+
+**Sprint 12.3 урок 2 (curl test message_id != real Telegram):** curl передаёт любой message_id, а Telegram API отвечает 400 "not found". В тестах нужно либо не передавать message_id вообще, либо передавать реальный.
+
+**Sprint 12.3 урок 3 (systemd > nohup для сервисов с .env):** `nohup python3 app.py` НЕ загружает .env. Всегда `systemd service` с `EnvironmentFile=` или явный `load_dotenv()` в коде.
+
+**Sprint 12.3 урок 4 (YandexGPT неустойчив к типам):** LLM может вернуть `confidence: "средняя"` (string) вместо `0.7` (float). Нужна нормализация на сервере.
+
+**Sprint 12.3 урок 5 (Python tuple в SQL = pain):** Sprint 11 multi-platform вернул `extract_video_id` как `(platform, id)` tuple. Это сломалось в `/youtube_subs` и `/kb_save`. Универсальное правило: на границе HTTP — всегда строки. Tuple unpack только в server-side коде.
+
+**Sprint 12.3 урок 6 (тестируй от PM, не от curl):** PM пожаловался — workflow не работал. На curl-тестах всё ОК. Разница: **curl fake message_id ломает Telegram API**, реальный message_id работает. Тест: **убери все `message_id` из нод workflow**. PM получит файл без reply, но это надёжно.
+
+**Дата:** 20.06.2026.
