@@ -2141,3 +2141,29 @@ for (const tok of tokens) {
 **Sprint 10 урок 4:** Test 3-кейса нужен: (1) явно инвестиционное, (2) семейные финансы, (3) явно off_topic (война/наука). Все три должно классифицировать корректно.
 
 **Дата:** 20.06.2026.
+
+
+### 3.39 ❌ n8n API key `mavis-deploy-2026-06` НЕ МОЖЕТ активировать workflows — "User attempted to activate a workflow without permissions"
+
+**Когда:** Sprint 10 (2026-06-20) — после 4 PUT'ов в workflow в n8n поле `active: true` возвращалось, но webhook не регистрировался. Реально workflow оставался deactivated.
+
+**Симптом:** `GET /webhook/4C4cqkAKBqk5cye6` → 404 "webhook is not registered". Telegram отправлял update'ы, но n8n не получал.
+
+**Корневая причина:** API key `mavis-deploy-2026-06` имеет роль **editor**, не **owner**. Только owner может:
+- Создавать/удалять workflows
+- Активировать/деактивировать
+- Регистрировать webhooks
+
+PM-у нужно зайти в n8n UI и вручную переключить Active на новом workflow. Без этого workflow не работает.
+
+**Sprint 10 урок 1:** `active: true` в response после POST /workflows — это **фиктивное поле**, не означает что workflow зарегистрирован. Проверять через `GET /webhook/{id}` — если 404, значит НЕ активирован.
+
+**Sprint 10 урок 2:** Все 7 executions research-agent что я видел в n8nEventLog.log в Sprint 9 (986, 987) — это **НЕ реальные executions**. Сейчас в /api/v1/executions?workflowId=FRsjN6Ab1FBGAMoM — **0 executions вообще**. Telegram бот @ZhukovsFirstBot не работал с самого начала Sprint 7.
+
+**Sprint 10 урок 3:** "Error in workflow" HTTP 500 при test webhook — это симптом что webhook ЗАРЕГИСТРИРОВАН, но нода внутри падает (например Code-нода с regex syntax). 404 = webhook НЕ зарегистрирован (workflow deactivated).
+
+**Sprint 10 урок 4:** PM должен дать **owner API key** для полного цикла, или делать activate вручную через UI. Editor ключ — только для PUT/GET.
+
+**Recovery:** PM, активируй workflow id `4C4cqkAKBqk5cye6` через n8n UI → toggle ON. После этого webhook `/webhook/4C4cqkAKBqk5cye6` начнёт работать. URL для Telegram: `https://seefeesnahurid.beget.app/webhook/4C4cqkAKBqk5cye6`.
+
+**Дата:** 20.06.2026.
