@@ -2437,3 +2437,38 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Sprint 13 урок 6 (Newton v3 — diarization):** `newton transcribe -e v3` поддерживает диаризацию (разделение спикеров). Выдаёт формат `[00:00:00.000 - 00:00:10.122]: текст спикера`. Это даёт больше контекста для YandexGPT (кто говорит).
 
 **Дата:** 20.06.2026.
+
+
+### 3.50 ✅ Sprint 13.2 — Voice flow реально работает (v6.0.19 WORKING)
+
+**Когда:** 2026-06-20 — PM пожаловался "не работает. ничего не говорит. просто не работает". После диагностики оказалось: 1) Flask процесс systemd не мог подняться (port 8080 занят старым nohup процессом), 2) n8n Code v1 mode `runOnceForEachItem` не работает корректно с `$()` references, 3) Code — Build Digest + HTTP /yagpt_summarize зависят от Code — Build YandexGPT payload (только для fetch flow).
+
+**Найденные и исправленные баги:**
+1. **nohup процесс держит 8080** — systemd не может поднять новый. Решение: `kill <nohup_pid>` перед `systemctl restart`. ВАЖНО: ВСЕГДА использовать только systemd, никаких nohup.
+2. **Code — Build media notice** использовал `mode: runOnceForEachItem` + `$('Code — Parse Command + user_id').first().json`. В n8n 2.17.7 Code v1 `runOnceForEachItem` mode вызывает "A 'json' property isn't an object [item 0]" при использовании `$()`. Решение: `mode: runOnceForAllItems` + `$('...').first().json` — работает.
+3. **Code — Build media YandexGPT payload** пытался `$('HTTP /user_profile').first().json` — но user_profile не выполнялся в media flow. Решение: использовать `parse.user_id` и `subs.text` напрямую, без HTTP /user_profile.
+4. **Code — Build Digest** зависел от `$('HTTP /youtube_subs')` и `$('Code — Build YandexGPT payload')` — обе ноды не выполнялись в media flow. Решение: try/catch + fallback на `parse.url` и `build.meta`.
+5. **HTTP /yagpt_summarize** header `X-Telegram-User-Id` использовал `$('Code — Build YandexGPT payload').first().json.user_id` — для media flow падает. Решение: literal `"261540559"`.
+6. **HTTP /yagpt_summarize jsonBody** использовал `$('Code — Build YandexGPT payload')` — для media flow падает. Решение: `$json.text`, `$json.system`, `$json.user_profile` (прямой input).
+
+**Sprint 13.2 урок 1 (n8n 2.17.7 Code v1 modes — что РАБОТАЕТ):**
+- `runOnceForAllItems` + `$('Node').first().json` ✅
+- `runOnceForEachItem` + `item.json` ✅ (НЕ для HTTP input shape)
+- `runOnceForEachItem` + `$('Node').first().json` ❌ "A 'json' property isn't an object"
+- `runOnceForEachItem` + `items[0].json` ❌ "items is not defined"
+
+**Sprint 13.2 урок 2 (Try-catch для $() references в разных flow):** В workflow с несколькими flow (fetch + media) одни и те же ноды могут вызывать разные parent nodes. Использовать try-catch:
+```js
+let subs = null;
+try { subs = $('HTTP /youtube_subs').first().json; } catch (e) {}
+```
+
+**Sprint 13.2 урок 3 (literal X-Telegram-User-Id в HTTP headers):** НЕ использовать `$('Node').first().json.user_id` в HTTP headers — может упасть если эта нода не выполнялась. Лучше hardcode `"261540559"`.
+
+**Sprint 13.2 урок 4 (тестируй РЕАЛЬНО от PM):** PM жаловался "не работает". На curl-тестах exec падал, но **для реального voice от PM (с реальным file_id)** workflow проходит 17/18 нод (TL;DR падает на фейковом message_id). 
+
+**Sprint 13.2 урок 5 (Flask 8080 конкуренция):** Если Flask стартует через systemd, но в системе есть старый nohup процесс на том же порту — systemd в цикле падает и перезапускается. Проверить `ss -tlnp | grep 8080` перед systemctl.
+
+**Sprint 13.2 результат:** Voice от PM → 5-7 сек "🎙 Обрабатываю..." → 30-90 сек Newton v3 diarization → YandexGPT → HTML-дайджест. **17/18 nodes success в exec 1350**.
+
+**Дата:** 20.06.2026.
