@@ -2253,3 +2253,29 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Sprint 10.2 урок 2:** Sprint 7 lesson §3.22 — `onError: continueRegularOutput` нужно ставить на КАЖДОЙ ноде, не глобально. И эта опция НЕ редактируется через REST API (read-only). Но если в новом JSON сразу при создании/обновлении есть `onError` — n8n принимает (Sprint 5 lesson §3.24).
 
 **Дата:** 20.06.2026.
+
+
+### 3.44 ❌ "Ключевые тезисы" в дайджесте = сырые VTT субтитры, а не тезисы — пользователь не понимает о чём видео
+
+**Когда:** Sprint 10.5 (2026-06-20) — PM жаловался что 30 claims в дайджесте = обрывки субтитров, не тезисы. Не понятно о чём видео.
+
+**Корневая причина:** v6.0.x рендерил claims напрямую из VTT (auto-generated subtitles от YouTube). Эти "claims" = raw text из VTT cues, без смысла. Например: "А мы обсуждали как-то довольно подробно, сколько должен стоить автомобиль" — не тезис, а фрагмент чужой мысли.
+
+**Fix v6.0.15:**
+1. **Prompt builder:** YandexGPT теперь просит "10-15 КЛЮЧЕВЫХ ТЕЗИСОВ из видео, по 10-20 слов. Это САМОСТОЯТЕЛЬНЫЕ мысли автора, не сырые субтитры. Каждый тезис передаёт СМЫСЛ: правило, цифру, рекомендацию, прогноз." + примеры хороших/плохих тезисов.
+2. **/youtube_subs:** `--write-comments` + top-30 YouTube comments by likes в response.
+3. **Code — Build Digest:** пробрасывает `claims_yagpt` (из YandexGPT) + `comments` (из youtube_subs) в /render_digest.
+4. **/render_digest:** принимает `claims_yagpt` (приоритет) + `comments`. Передаёт в _render_html.
+5. **_render_html:** claims_yagpt используется ПРИОРИТЕТНО над VTT claims. VTT fallback если YandexGPT не вернул.
+6. **_render_html:** нормализует claims (list of strings → list of dicts). Не склеивает claims с ts=0 (YandexGPT).
+7. **_render_html:** новая секция "🗣 Что обсуждают в комментариях" с top-10 by likes.
+
+**Sprint 10.5 урок 1:** VTT cues ≠ тезисы. Тезисы = пересказ смысла, не сырые фразы. YandexGPT умеет делать тезисы, но только если явно попросить.
+
+**Sprint 10.5 урок 2:** yt-dlp `--write-comments` даёт top-N YouTube comments. Полезно для "социальный сигнал" — что обсуждают под видео, какие вопросы.
+
+**Sprint 10.5 урок 3:** Когда merge-логика для VTT cues (внутри 3-секундного окна) применяется к YandexGPT claims (все ts=0) — они ВСЕ склеиваются в 1 длинный текст. Нужна отдельная ветка: ts=0 → не merge, separate items.
+
+**Sprint 10.5 урок 4:** Render должен принимать ОБА формата: list of strings (YandexGPT) и list of dicts (VTT). Иначе normalize в render.
+
+**Дата:** 20.06.2026.
