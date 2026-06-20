@@ -2472,3 +2472,30 @@ try { subs = $('HTTP /youtube_subs').first().json; } catch (e) {}
 **Sprint 13.2 результат:** Voice от PM → 5-7 сек "🎙 Обрабатываю..." → 30-90 сек Newton v3 diarization → YandexGPT → HTML-дайджест. **17/18 nodes success в exec 1350**.
 
 **Дата:** 20.06.2026.
+
+
+### 3.51 ✅ Sprint 14 — VK Video support (v6.0.20)
+
+**Когда:** 2026-06-20 — PM попросил "с ВК видео ты можешь сделать такую же".
+
+**Что сделано:**
+1. **`utils.py::extract_video_id`** добавлен `VK_VIDEO_ID_RE` для `vk.com`, `vkvideo.ru`, `vkvideo.com`, `m.vk.com`. Patterns:
+   - `vk.com/video-{oid}_{vid}` (group video)
+   - `vk.com/clip-{oid}_{vid}` (clips)
+   - `vk.com/wall-{oid}_{vid}` (in wall post, с `?z=video-`)
+   - `vkvideo.ru/video-{oid}_{vid}` (new domain)
+2. **Code — Parse Command v6.0.20** добавлен regex для VK URL.
+3. **`/youtube_subs` v6.0.20 fallback** — если subs download падает (VK CDN 400 cross-IP), то:
+   - yt-dlp скачивает audio (mp4) — 35 MB за 14 сек
+   - newton transcribe -e v3 — распознаёт (33 KB текста)
+   - Возвращается с `source: 'yt-dlp-transcribe-fallback'`
+
+**Sprint 14 урок 1 (yt-dlp subs vs audio):** VK CDN использует cross-IP проверку (subs URL содержит `srcIp=217.114.7.5` + `urls=185.180.203.164` (внутренний IP VK)). Если IP разные, CDN возвращает 400. НО yt-dlp download через HLS segments работает — IP не проверяется для видео потока.
+
+**Sprint 14 урок 2 (Newton transcribe с NEWTON_TOKEN в subprocess):** В systemd-процессе Flask NEWTON_TOKEN может не передаваться в subprocess. Решение: `env={**os.environ, 'NEWTON_TOKEN': os.environ.get('NEWTON_TOKEN', '') or 'Xmho...'}` (hardcoded fallback). 
+
+**Sprint 14 урок 3 (ffmpeg отсутствует в контейнере):** yt-dlp пытается postprocess `-x --audio-format best` и падает с "ffprobe and ffmpeg not found". Решение: `--ffmpeg-location /usr/bin` (там нет, но yt-dlp всё равно скачает файл и не сломается на postprocess). Альтернатива: `returncode != 0` ИГНОРИРОВАТЬ, проверять только `os.path.exists(_audio_path) and os.path.getsize(_audio_path) > 1000`.
+
+**Sprint 14 урок 4 (реальный VK контент):** Тестовое видео `https://vk.com/video-174293323_456240712` (Мрочковский, "Что будет с экономикой РФ?") 1071 сек, 18 мин. Newton v3 распознал 18802 chars текста. YandexGPT сделал 5 буллетов summary (биткоин 72к$, нефть 67$, рост экономики 1-1.3%, лимит на наличные 1М, санкции ЕС) + 3 actions. Workflow: 12/13 nodes success, exec=1427.
+
+**Дата:** 20.06.2026.
