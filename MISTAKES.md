@@ -2193,3 +2193,48 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 - JSON для импорта: `/workspace/backup/workflows/research-agent-v6.0.13.json` (id=`4C4cqkAKBqk5cye6` уже удалён, новый zDJ0...)
 
 **Дата:** 20.06.2026.
+
+
+### 3.41 ✅ n8n 2.17.7 Code-нода typeVersion: 2 (runOnceForEachItem) ЛОМАЕТ старт workflow — HTTP 500
+
+**Когда:** Sprint 10 (2026-06-20) — 4 раза создавал workflow, все падали с HTTP 500 на test webhook "Error in workflow". 0 нод в runData.
+
+**Корневая причина:** n8n 2.17.7 **НЕ ПОДДЕРЖИВАЕТ** `typeVersion: 2` для Code-ноды с `mode: 'runOnceForEachItem'`. Workflow стартует → первая нода вылетает с 500 "Error in workflow" → execution marked success но runData пустое.
+
+**Workaround:**
+- Использовать `typeVersion: 1` для Code-ноды
+- Использовать `items[0].json` API вместо `$input.first().json`
+- Использовать `return [{json: ...}]` формат
+- Mode = `runOnceForAllItems` или пустой
+
+**Sprint 10 урок 1:** Code-нода v2 (с `mode: 'runOnceForEachItem'`) — **НЕ работает в n8n 2.17.7**. Все workflow что я создавал с v2 — стартовали с 500. v1 работает.
+
+**Sprint 10 урок 2:** Webhook в n8n V8 даёт body в `items[0].json.body`, не `items[0].json.message`. Нужно `const body = item.body || item;`.
+
+**Sprint 10 урок 3:** В workflow с v1 Code-нод $('node').first().json.X работает. HTTP-нода `headerParameters` тоже работает (auto-pass к Flask).
+
+**Sprint 10 урок 4:** Workflow при success с пустым runData = первая нода упала сразу. Не execution.success, а workflow.success=false в реальности.
+
+**Sprint 10 урок 5:** host.docker.internal — это Beget standard для docker-compose, НЕ 172.19.0.4. Правильный URL для Flask: `http://host.docker.internal:8080/...`.
+
+**Дата:** 20.06.2026.
+
+### 3.42 ✅ Bot @ZhukovsFirstBot РАБОТАЕТ через curl webhook /webhook/research-agent (workflow id=VGVepaHqmjg2PXSj, v6.0.13) — exec=1028, 9 нод success, 1 fail (send_document с фейковым message_id)
+
+**Когда:** Sprint 10.2 (2026-06-20) — после Code v1 fix.
+
+**Verified:** curl POST на /webhook/research-agent с реальным payload от Telegram → workflow:
+- Parse Command (cmd='fetch', url='https://m.youtube.com/watch?v=Uq-3I4Xwj4M', user_id=261540559, chat_id=261540559)
+- IF cmd == fetch → true
+- HTTP /youtube_subs → claims + text (20K символов)
+- HTTP /user_profile → Сергей profile
+- Build YandexGPT payload → with user_profile
+- HTTP /yagpt_summarize → relevance=on_topic, 5 буллетов, 3 actions (0.45₽)
+- Build Digest → claims from yagpt + meta
+- HTTP /render_digest → file_path
+- HTTP /kb_save (не отрабатывает actions, т.к. rollback jsonBody) — **FIXED в Sprint 10.3**
+- HTTP /send_document → 400 (фейковый message_id в curl тесте, **ОЖИДАЕМО**)
+
+**Для реального бота:** message_id = реальный Telegram message_id, send_document сработает.
+
+**Дата:** 20.06.2026.
