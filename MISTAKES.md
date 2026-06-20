@@ -2341,3 +2341,36 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Sprint 12 урок 6 (Channel URL support):** `yt-dlp --flat-playlist --playlist-items 1-1 --print "%(id)s"` достаёт ID последнего видео канала. Затем подставляем в `https://www.youtube.com/watch?v=${id}`. Один exec = 1 дайджест последнего видео канала.
 
 **Дата:** 20.06.2026.
+
+
+### 3.47 ✅ Sprint 12.2 — Реальные баги от PM, не тестовые (v6.0.18)
+
+**Когда:** 2026-06-20 — PM пожаловался "вообще ничего не работает". После теста выяснилось: workflow на curl-тестах работал, но реальные Telegram-сообщения от PM не обрабатывались 5 часов.
+
+**Найденные баги:**
+1. **SWITCH v1 + v3.2 в n8n 2.17.7 — НЕ различает outputs корректно.** Возвращает всё в первый output. Решение: 3 параллельных IF v2.2.
+2. **Code — Use channel result + `runOnceForEachItem` + `items[0]` — ReferenceError.** Проблема в том что `items`/`item` глобально не определены в V8-контексте, если Code-нода не подключена к правильному input. Решение: использовать `runOnceForAllItems` + `$('Node').first().json`.
+3. **`Code — Skip if no url` — постоянно ReferenceError.** n8n 2.17.7 в Code v1 не даёт напрямую `items` и `item` для IF output. Решение: не использовать Code-ноду как фильтр, делать логику в следующей ноде (например HTTP subs сам вернёт 400 если url пустой).
+4. **`HTTP /send_message (channel notice)` — "Bad Request: message to be replied not found"** когда message_id фейковый (curl test). Решение: убрать `message_id` из этой ноды — пусть PM получит простое сообщение без reply. TL;DR оставляем с message_id.
+5. **FLASK_DEBUG=0 + nohup НЕ загружает .env автоматически.** Все endpoints возвращают 403 unauthorized. Решение: **systemd service с `EnvironmentFile=/opt/beget/n8n/.env`**. Создан `/etc/systemd/system/newton-api.service`, запущен через `systemctl start newton-api`.
+6. **`extract_video_id` теперь возвращает tuple `(platform, id)`** (Sprint 11 multi-platform), но `/youtube_subs` ожидал string. Решение: `platform, video_id = extract_video_id(...)` + use `data.get('url')` if provided.
+7. **Rutube subs support был потерян** когда я восстановил routes.py из bak.20260619. Решение: руками добавил Rutube SRT handling: `subtitles[lang]` list of dicts, base64 gzipped SRT embedded as `data` field.
+8. **`child_process` is disallowed** в n8n Code-ноде (Sprint 12.1). Решение: создал `/youtube_channel_latest` Flask endpoint, который вызывает yt-dlp subprocess. n8n просто делает HTTP POST.
+
+**Sprint 12.2 урок 1 (curl test != real test):** PM отправил 5 сообщений за 1.5 часа, workflow на curl-тестах работал, но **реальные Telegram updates висели в pending и падали**. Сначала удалить webhook (drops pending), потом активировать workflow, потом тестировать с реальным Telegram-юзером (НЕ curl).
+
+**Sprint 12.2 урок 2 (systemd для .env):** `nohup python3 app.py` НЕ загружает .env. Всегда использовать systemd service с `EnvironmentFile=`.
+
+**Sprint 12.2 урок 3 (n8n Code v1 modes — что РАБОТАЕТ):**
+- `runOnceForAllItems` + `items[0].json` ✅
+- `runOnceForAllItems` + `$('Node').first().json` ✅
+- `runOnceForEachItem` + `item.json` ⚠️ (зависит от контекста)
+- `runOnceForEachItem` + `items[0].json` ❌ ReferenceError
+
+**Sprint 12.2 урок 4 (continueOnFail не работает в webhook):** В webhook-triggered flow `onError: 'continueRegularOutput'` в HTTP Request НЕ работает. Workflow всё равно останавливается с error. Решение: убрать message_id или сделать fallback в Flask endpoint.
+
+**Sprint 12.2 урок 5 (сначала бэкап, потом патчить):** Один раз я восстановил routes.py из bak.20260619, потерял Sprint 11 Rutube support. Хорошо что bak был. Нужно коммитить routes.py в git после каждой правки.
+
+**Sprint 12.2 урок 6 (тестируй от PM, не от curl):** curl message_id не существует в Telegram. Telegram API отвечает 400. Workflow error. PM не получает ничего. Урок: либо не передавай message_id в curl test, либо используй реальный message_id от webhook'а.
+
+**Дата:** 20.06.2026.
