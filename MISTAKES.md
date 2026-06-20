@@ -2238,3 +2238,18 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Для реального бота:** message_id = реальный Telegram message_id, send_document сработает.
 
 **Дата:** 20.06.2026.
+
+
+### 3.43 ❌ Code — Build YandexGPT payload -> HTTP /send_message (error) — error отправляется ВСЕГДА (не только при ошибке yagpt)
+
+**Когда:** Sprint 10.2 (2026-06-20) — PM прислал результат execution 1030: бот отправил 3 сообщения (digest, TL;DR, error "не удалось обработать видео"). 13 нод success, всё ОК, но error тоже пришёл.
+
+**Корневая причина:** В workflow connections было `Build YandexGPT payload -> [yagpt, error]`. Это значит error нода запускается ПАРАЛЛЕЛЬНО с yagpt, **всегда** (независимо от того, упал ли yagpt).
+
+**Fix v6.0.14:** Перенаправил error ветку: `yagpt -> [Build Digest, error]`. Теперь error срабатывает только когда yagpt падает (через `onError: 'continueRegularOutput'` на yagpt ноде, Sprint 7 lesson).
+
+**Sprint 10.2 урок 1:** В n8n connections НЕТ "else" ветки. Если хочешь error-ветку — нужен либо `onError: continueRegularOutput` на source ноде + 2 выхода (success/error), либо IF-нода после.
+
+**Sprint 10.2 урок 2:** Sprint 7 lesson §3.22 — `onError: continueRegularOutput` нужно ставить на КАЖДОЙ ноде, не глобально. И эта опция НЕ редактируется через REST API (read-only). Но если в новом JSON сразу при создании/обновлении есть `onError` — n8n принимает (Sprint 5 lesson §3.24).
+
+**Дата:** 20.06.2026.
