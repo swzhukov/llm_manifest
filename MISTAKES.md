@@ -2311,3 +2311,33 @@ PM-у нужно зайти в n8n UI и вручную переключить A
 **Sprint 11 урок 4:** Поле `categories` у Rutube = list of strings, не dict. Если где-то в коде `_meta.get('categories').get('something')` — упадёт. Нужно проверять `isinstance(value, dict)`.
 
 **Дата:** 20.06.2026.
+
+
+### 3.46 ✅ Sprint 12 — UX: help/invalid/channel feedback (v6.0.17)
+
+**Когда:** 2026-06-20 — PM пожаловался "бот не отвечает, нужно больше обратной связи".
+
+**Что сделано:**
+1. **Parse Command v6.0.17:** различает 4 типа команд:
+   - `cmd=fetch` — есть валидный video URL (YouTube или Rutube)
+   - `cmd=channel` — YouTube канал `@username` или `/channel/xxx` (новое)
+   - `cmd=help` — `/help` или `/start` или просто текст без URL
+   - `cmd=invalid` — URL не распознан (но начинается с http)
+2. **3 параллельных IF** вместо SWITCH (n8n 2.17.7 SWITCH в output делает плохой shape)
+3. **Code — Build help/error msg:** формирует текст в зависимости от cmd
+4. **Code — Channel handler:** для channel URL вызывает `yt-dlp --flat-playlist --playlist-items 1-1` чтобы достать video_id последнего видео
+5. **HTTP /send_message (help):** отправляет текст в Telegram
+
+**Sprint 12 урок 1 (n8n 2.17.7 SWITCH bug):** SWITCH нода с несколькими rules передаёт output в Code node с неправильным shape ("A 'json' property isn't an object [item 0]"). Решение — 3 параллельных IF с filter conditions, output идёт на разные ноды.
+
+**Sprint 12 урок 2 (HTTP jsonBody expressions):** Если jsonBody в n8n HTTP Request содержит `$('...')`, нужно обрамлять как `={{ JSON.stringify({ ... }) }}` или `={{ { ... } }}`. Без `=...` n8n парсит как plain text.
+
+**Sprint 12 урок 3 (Code v1 modes):** Code-нода в n8n 2.17.7 v1 с `mode: runOnceForEachItem` для IF output может упасть с "items is not defined". Лечить: использовать `mode: runOnceForAllItems` + обращаться к input через `$('Node').first().json` ИЛИ `items[0].json`.
+
+**Sprint 12 урок 4 (X-Telegram-User-Id required):** Flask `/send_message` endpoint требует `X-Telegram-User-Id: 261540559` header. Без него 403. ЭТО header есть в curl из n8n, но в новой ноде HTTP /send_message (help) я забыл добавить → unauthorized.
+
+**Sprint 12 урок 5 (Telegram pending updates):** Если webhook 500-ит (например webhook работал, но workflow не активирован), Telegram копит updates в `pending_update_count` и retries. Если workflow всегда падает — pending растёт. Решение: `deleteWebhook` сбрасывает pending.
+
+**Sprint 12 урок 6 (Channel URL support):** `yt-dlp --flat-playlist --playlist-items 1-1 --print "%(id)s"` достаёт ID последнего видео канала. Затем подставляем в `https://www.youtube.com/watch?v=${id}`. Один exec = 1 дайджест последнего видео канала.
+
+**Дата:** 20.06.2026.
