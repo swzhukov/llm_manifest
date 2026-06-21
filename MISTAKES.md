@@ -2499,3 +2499,144 @@ try { subs = $('HTTP /youtube_subs').first().json; } catch (e) {}
 **Sprint 14 урок 4 (реальный VK контент):** Тестовое видео `https://vk.com/video-174293323_456240712` (Мрочковский, "Что будет с экономикой РФ?") 1071 сек, 18 мин. Newton v3 распознал 18802 chars текста. YandexGPT сделал 5 буллетов summary (биткоин 72к$, нефть 67$, рост экономики 1-1.3%, лимит на наличные 1М, санкции ЕС) + 3 actions. Workflow: 12/13 nodes success, exec=1427.
 
 **Дата:** 20.06.2026.
+
+
+### 3.52 ✅ Sprint 15 — Bot Menu + Comments Analysis + /process_url (v6.0.20-RESTORED)
+
+**Когда:** 2026-06-21 — PM попросил 4 улучшения в Sprint 16 (21:27 от PM 20.06.2026):
+1. Menu/help as inline buttons
+2. DROP YandexGPT "тезисы" — USE comments as primary supplementary source
+3. Universal yt-dlp+Newton (try subs first, Newton fallback)
+4. Unified feedback (receipt ack, ETA, progress, error with log location)
+
+**Что сделано:**
+
+#### 1. **Telegram Bot Menu** (`/set_my_commands` endpoint в `telegram_bot/routes.py`)
+- 6 дефолтных команд: menu, help, recent, stats, pending_actions, cancel
+- Вызов: `setMyCommands` API → Telegram показывает кнопку "Меню" внизу чата
+- PM может настроить свои команды через `POST /set_my_commands` с `{"commands": [...]}`
+
+**Урок 3.52.1:** Endpoint вернул "415 Unsupported Media Type" без `Content-Type: application/json`. Всегда проверять header.
+
+#### 2. **Universal `/process_url` endpoint** (в `research/routes.py`)
+- Один endpoint для **всех** yt-dlp extractors (YouTube, Rutube, VK, и 2000+ других)
+- Алгоритм: subs (VTT) → audio + Newton transcribe → description_only
+- Возвращает `{method, platform, video_id, title, description, duration, text, char_count, meta}`
+
+**Урок 3.52.2 (subs parsing для Rutube):** Rutube subs в `_meta['subtitles']['ru']` — это list of dicts, но **с полем `data`** (base64+gzip), а не `url`. Нужно:
+```python
+for c in _meta.get('subtitles', {}).get('ru', []):
+    if isinstance(c, dict) and c.get('data'):
+        import base64, gzip
+        raw = gzip.decompress(base64.b64decode(c['data'])).decode('utf-8')
+        text = vtt_to_text(raw)
+```
+
+**Урок 3.52.3 (extractor selection):** Используй `requested_subtitles` → `subtitles` → `automatic_captions` — каждый уровень содержит разный формат. Subs URL без protocol (`//`) — добавь `https:`.
+
+**Тест:** VK video 1071s → audio_transcribe (18802 chars). YouTube → subs (20757 chars). Rutube → subs_embedded (7632 chars).
+
+#### 3. **`/comments_analyze` endpoint** (в `kb/routes.py` — v6.0.20+)
+- Принимает top-30 comments (по лайкам)
+- YandexGPT выдаёт `{comments_summary: [...], top_valuable: [{author, text, value_score, value_reason}]}`
+- max_valuable=5, max_summary=3 (configurable)
+
+**Урок 3.52.4 (YandexGPT env vars):** Название ключа `YANDEX_GPT_API_KEY` (не `YAGPT_API_KEY`). Folder ID `b1gj791m9sc92argfa0q` (не hardcoded `b1g8ad6ckje9d3jvsnem`).
+
+**Урок 3.52.5 (chunk_text returns list):** `chunk_text(text, size=6000)` возвращает **list of strings**, не string! Всегда `chunks[0]` или `'\n'.join(chunks)`.
+
+#### 4. **`/render_digest` v6.0.20 — drop claims_yagpt, add 3 sections**
+- Удалено: "💬 Ключевые тезисы (до 30)" (claims из YandexGPT — PM не понимал)
+- Добавлено: "💬 Что обсуждают в комментариях" (summary)
+- Добавлено: "🔥 Популярные комментарии (топ по лайкам)"
+- Добавлено: "💎 Самые ценные комментарии (топ по смыслу, value_score 1-10)"
+
+**Урок 3.52.6 (HTML rendering top_valuable):** В `top_valuable` ключ в HTTP request body — `top_valuable`, а в коде endpoint читается `data.get('top_valuable_comments', [])` (mismatch). Fix: добавить fallback `or data.get('top_valuable', [])`.
+
+#### 5. **CRITICAL FIX: `video_id = data.get(...) or extract_video_id(...)` (Sprint 12.3 bug)**
+- `extract_video_id` возвращает **tuple** `(platform, video_id)`, а не просто `video_id`!
+- Когда `video_id` сохранялся в переменную, оно становилось tuple `('youtube', 'Uq-3I4Xwj4M')`
+- `f'https://youtu.be/{video_id}'` = `'https://youtu.be/("youtube", "Uq-3I4Xwj4M")'` → yt-dlp error "Unsupported URL"
+- Решение: `_extracted = extract_video_id(...) ; video_id = _extracted[1] if isinstance(_extracted, tuple) else None`
+- **В коде было ДВА таких места** (YouTube API endpoint + /youtube_subs) — оба пофиксил
+
+**Дата:** 21.06.2026.
+
+
+### 3.53 ✅ n8n Code v1 + V8 bug — `Can't use .first() here` (Sprint 15)
+
+**Когда:** 2026-06-21 — Pass through node с `$input.first()` упал с "Can't use .first() here [line 2, for item 0]".
+
+**Контекст:** В n8n 2.17.7 с V8 engine, mode=`runOnceForEachItem` + `$input.first().json` — **не работает**. `$input` — это не объект, а прокси в контексте each-item.
+
+**Решение:** В `runOnceForEachItem` использовать `item.json` напрямую (переменная `item` итерируется per item):
+```javascript
+// ❌ Не работает:
+mode: 'runOnceForEachItem', jsCode: 'const j = $input.first().json; ...'
+// ✅ Работает:
+mode: 'runOnceForEachItem', jsCode: 'const j = item.json; ...'
+```
+
+**Урок 3.53.1:** При работе с n8n Code node ВСЕГДА проверяй mode + correct access pattern:
+- `runOnceForAllItems` + `$('Node').first().json` ✅ (n8n parser OK)
+- `runOnceForEachItem` + `item.json` ✅ (each item, variable iterates)
+- `runOnceForEachItem` + `$('Node').first().json` ❌ "A 'json' property isn't an object" (n8n 2.17.7 V8 bug)
+- `runOnceForEachItem` + `$input.first().json` ❌ "Can't use .first() here"
+
+**Дата:** 21.06.2026.
+
+
+### 3.54 ✅ systemd ExecStartPre с fuser — защита от nohup-гонки (Sprint 15)
+
+**Когда:** 2026-06-21 — Flask упал с auto-restart, а порт 8080 занят nohup процессом PID 3924893 (started 17:28).
+
+**Проблема:** В Sprint 10-14 я делал `nohup python3 newton-api.py &` (забывая `kill`). Каждый раз при рестарте через systemd новый процесс не мог занять порт, а nohup-процесс жил вечно (потому что systemd не kill'ил его, и пользователь не помнил).
+
+**Решение в `/etc/systemd/system/newton-api.service`:**
+```
+[Service]
+ExecStartPre=/bin/bash -c 'fuser -k 8080/tcp 2>/dev/null; sleep 2'
+ExecStart=/usr/bin/python3 newton-api.py
+ExecStopPost=/bin/bash -c 'pkill -TERM -f "nohup.*newton-api" 2>/dev/null; sleep 1'
+Restart=always
+RestartSec=5
+```
+
+**Урок 3.54.1:** `ExecStartPre` с `fuser -k 8080/tcp` освобождает порт ДО старта. `ExecStopPost` с `pkill` чистит orphan nohup процессы.
+
+**Дата:** 21.06.2026.
+
+
+### 3.55 ✅ workflow v6.0.20-RESTORED (Sprint 15 — НЕ сделан ack в production)
+
+**Когда:** 2026-06-21 — после Sprint 15 я попытался добавить ack message в начало workflow, но столкнулся с:
+1. n8n Code v1 `$input.first()` не работает в `runOnceForEachItem` mode
+2. PUT API теряет connections (не сохраняет новые ноды)
+3. parallel IF true branches не всегда выполняются обе (n8n 2.17.7 quirk)
+4. URL corruption в n8n expr (Pass through теряет url)
+
+**Решение:** Восстановил **v6.0.20-RESTORED** (31 нод, рабочий). Ack НЕ внедрён в workflow.
+
+**Pending для Sprint 16:**
+- Добавить акк через Telegram Bot Menu (который уже работает)
+- Или через Code — Build ack v6.0.21 → IF needs_ack → [HTTP /send_message (ack), Code — Pass through v6.0.21] (с правильным mode + connections)
+- Или через простой webhook node в начале + Telegram reply в `lastNode` mode
+
+**Урок 3.55.1 (n8n PUT API quirks):**
+- `PUT /workflows/{id}` принимает **только** `{name, nodes, connections, settings}` (минимальный). Любой другой top-level field → 400 "request/body must NOT have additional properties"
+- `staticData: null` ломает PUT
+- Новые connections добавляются к старым, **не заменяют** — нужно явно удалять старые (по id) и заменять на name-based
+
+**Урок 3.55.2 (parallel IF branches):** Если IF v2.2 has multiple targets в `main[0]`, **n8n выполняет их последовательно** (не параллельно). Второй target выполняется только если первый не "завершил" execution. Решение: использовать **2 разных IF** или **один Code node** для parallel processing.
+
+**Урок 3.55.3 (jsonBody в HTTP Request):** Используй `$json.url` от предыдущей ноды (а не `$('Node').first().json.url`) — последнее иногда **резолвит url в функцию** (которая вызывается и возвращает tuple).
+
+**Sprint 15 финальный state:**
+- `/process_url` — работает (YouTube subs, Rutube subs embedded, VK transcribe fallback)
+- `/comments_analyze` — работает (YandexGPT analysis + top_valuable)
+- `/render_digest` v6.0.20 — работает (3 секции вместо тезисов)
+- `/set_my_commands` — работает (6 команд в Bot Menu)
+- Workflow v6.0.20-RESTORED — 15/15 nodes success, exec 1606
+- **v6.0.21 (ack message) — отложен в Sprint 16**
+
+**Дата:** 21.06.2026.
