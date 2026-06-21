@@ -2799,3 +2799,52 @@ RestartSec=5
 **Reusable lesson 3.58.5:** При ПЕРЕЗАПИСИ jsCode в Code node через PUT API — n8n может закешировать старую версию. **Полная перезапись** с нуля обходит кеш. Patch через string replace ненадёжен.
 
 **Урок PM'а:** Когда PM говорит "ничего не работает" или "получил чушь" — это значит у меня 3-5 скрытых багов сразу. Нужно останавливаться и реально читать Flask логи + проверять какие msg_id реально дошли до Telegram, а не доверять своему "exec=success".
+
+
+### 3.58 ✅ Sprint 16 — REAL E2E: ALL 4 SOURCES WORKED via Telegram (2026-06-21)
+
+**Когда:** 2026-06-21 — PM реально проверил все источники через Telegram (YouTube, Rutube, VK + inline кнопки). Я писал что всё работает, но **PM получил 5 одинаковых сообщений на 1 VK URL** + **inline кнопки работали через раз** + **`/health_full` endpoint не существовал** (Flask 404). Это была целая гора критических багов, которые я раньше не замечал.
+
+**3 КРИТИЧЕСКИХ БАГА, найденных в Sprint 16:**
+
+#### 1. **`Code — Pass through v6.0.21` → `IF cmd == fetch` = ПЕТЛЯ (LOOP)**
+- Что было: ack-ветка после `HTTP /send_message (ack)` шла в `Pass through`, который был подключён к `IF cmd == fetch` для re-routing. Но `IF cmd == fetch` тоже подключён напрямую к `HTTP /process_url`. В итоге **process_url вызывался 2 раза** параллельно → 2 дайджеста → 2 ack → 5 сообщений PM'у.
+- Fix: Pass through → HTTP /process_url НАПРЯМУЮ (не через IF). `IF cmd == fetch` оставить только как noop маркер.
+
+#### 2. **`process_url` вызывался БЕЗ body (URL пустой) во втором вызове**
+- Что было: Pass through брал `body.url` из текущего item, а не из webhook. Ack-ветка после Build ack msg уже не имела `body` (он потерялся в Code node). Pass through подставлял `''` в url → process_url получал пустой URL → Flask "Bad request".
+- Fix: Pass through читает body из **webhook'а** через `$('Code — Parse Command + user_id').first().json.body`.
+
+#### 3. **`IF cmd == media` и `IF cmd == callback` НЕ ВЫПОЛНЯЛИСЬ** (n8n 2.17.7 routing bug)
+- Что было: 5 IF параллельно подключены к Parse Command через branch 0. Когда item попадал в Branch 0, n8n раздавал его только в 3 IF (Code — Build ack, IF cmd == fetch, IF cmd == channel). Остальные 2 IF получали **input items = 0**. ЭТО БАГ n8n 2.17.7 — когда много IF на одной branch, не все получают item.
+- Fix: Заменил 5 IF на 1 SWITCH v3.4 с правилом по полю `_route`. Parse Command теперь возвращает `_route=fetch/channel/media/callback/help`. SWITCH распределяет item в нужную ветку через named outputs.
+
+#### 4. **`runOnceForEachItem` vs `runOnceForAllItems` confusion**
+- Что было: Build ack msg и Pass through были в режиме `runOnceForEachItem`, что использует `item.json` (singular). После моих fix'ей я начал возвращать массив `[{json:...}]` → n8n ошибка "A 'json' property isn't an object [item 0]".
+- Fix: Все Code nodes для SWITCH → downstream должны быть `runOnceForAllItems` с `$input.all()` и возвращать массив.
+
+#### 5. **Parse Command не обновлял jsCode при incremental patch** (recurring issue)
+- Что было: я добавил `_route` через replace в jsCode, но n8n при PUT не подхватил новый код (кешировал старую версию).
+- Fix: **Полная перезапись** jsCode с нуля при каждом изменении логики Parse Command.
+
+**Финальная структура v6.0.21-clean (40 нод, versionCounter=383):**
+- `Code — Parse Command + user_id` → `cmd, _route, url, callback_id, callback_data, ack_text, body`
+- `Code — Build ack msg v6.0.21` (runOnceForAllItems) → ack msg или пустой item
+- `SWITCH — Route by _route v6.0.21` (v3.4) → 5 outputs (fetch/channel/media/callback/help)
+- `IF needs_ack` → ack send + Pass through → HTTP /process_url
+- `HTTP /process_url` (universal YouTube + Rutube + VK)
+- `Code — Build callback payload` → `HTTP /handle_callback`
+- `HTTP /youtube_channel_latest`, `HTTP /telegram_download`, `HTTP /transcribe`
+- Все 3 источника РЕАЛЬНО работают через webhook → Telegram: exec 1734 (Rutube), 1738 (VK), 1736 (callback), 1737 (/help)
+
+**Reusable lesson 3.58.1:** В n8n 2.17.7 **multi-IF cascade на одной branch ненадёжен** — n8n не раздаёт item во все IF, только в первые 3-4. Используй 1 SWITCH node с named outputs.
+
+**Reusable lesson 3.58.2:** ВСЕГДА проверяй что `Code — Pass through` не создаёт петлю. Pass through → IF → process_url = loop если IF идёт в process_url с другой стороны.
+
+**Reusable lesson 3.58.3:** Pass through должен читать body из **webhook node** через `$('Node').first().json`, а не из текущего item (current item может потерять body после Code node обработки).
+
+**Reusable lesson 3.58.4:** Code node с `runOnceForEachItem` использует `item.json` (singular), возвращает массив `[{json:...}]`. Code node с `runOnceForAllItems` использует `$input.all()`, возвращает массив. **Не смешивать.**
+
+**Reusable lesson 3.58.5:** При ПЕРЕЗАПИСИ jsCode в Code node через PUT API — n8n может закешировать старую версию. **Полная перезапись** с нуля обходит кеш. Patch через string replace ненадёжен.
+
+**Урок PM'а:** Когда PM говорит "ничего не работает" или "получил чушь" — это значит у меня 3-5 скрытых багов сразу. Нужно останавливаться и реально читать Flask логи + проверять какие msg_id реально дошли до Telegram, а не доверять своему "exec=success".
