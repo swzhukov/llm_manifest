@@ -2705,3 +2705,48 @@ RestartSec=5
 **Урок 3.56.7 (Pass through node в workflow — обязательно для ack pipeline):** HTTP /send_message (ack) возвращает только `{message_id, status}` от Telegram API. Если идти в `IF cmd == fetch` напрямую, n8n не найдёт `url` в `$json` (потому что $json теперь = {message_id, status}). Pass through **ДОЛЖЕН** идти параллельно с ack, и **его output** (с body) идёт в IF.
 
 **Дата:** 21.06.2026.
+
+
+### 3.57 ✅ Sprint 15 v6.0.21 — REAL E2E тест: YouTube + Rutube + VK + inline callbacks (2026-06-21)
+
+**Когда:** 2026-06-21 — PM дал жёсткий feedback "а ты всё сделал, что я говорил? всё источники умеешь отрабатывать? всё кнопки меня проверил?". После первого раунда v6.0.21 только YouTube был проверен через бота. Сделал полный real E2E через webhook → PM.
+
+**Что сделано (всё реально проверено через webhook → PM в Telegram):**
+
+#### 1. **Все 3 источника реально через PM (webhook → Telegram)**
+- exec 1645: YouTube `https://youtu.be/Uq-3I4Xwj4M` → PM получил digest "Сколько должна стоить квартира для личного проживания?" ✅
+- exec 1682: Rutube `https://rutube.ru/video/3b3de9576f4ba188e928a074cbaedfdf/` → PM получил digest "Рубль или валюта Почему IMOEX падает Заработать на Мосбирже: Идеи Портфели" ✅
+- exec 1696: VK `https://vk.com/video-174293323_456240712` → PM получил digest "Что будет с экономикой РФ? Лимит на внесение наличных поддержали в Госдуме" ✅
+
+#### 2. **Inline keyboard callbacks (PM нажимает кнопки в Telegram)**
+- exec 1677: callback "help_youtube" → /handle_callback → answerCallbackQuery + sendMessage ✅
+- exec 1679: callback "recent" → /handle_callback → actions_recent → PM получил список ✅
+- exec 1680: callback "stats" → /handle_callback → health_full → PM получил JSON ✅
+- exec 1681: callback "pending" → /handle_callback → PM получил list ✅
+- exec 1681: callback "close_menu" → /handle_callback → deleteMessage → меню исчезло ✅
+
+#### 3. **Workflow v6.0.21 = 40 нод (v=329, active)**
+- 4 новые ноды для callback pipeline: `IF cmd == callback`, `Code — Build callback payload v6.0.21`, `HTTP /handle_callback`, `Code — Close menu v6.0.21`
+- Code — Parse Command v6.0.21: переписан полностью (replaced regex pattern fix), теперь читает `body.callback_query`
+- HTTP /handle_callback: jsonBody = `{{JSON.stringify($json)}}` (callback_payload from Code node)
+
+#### 4. **Главные баги найдены и пофикшены**
+- **`invalid syntax` в jsonBody** — `={{ "callback_query": {...} }}` с двойными `{{` → syntax error. Fix: отдельный Code node "Build callback payload" формирует dict, а HTTP использует `={{JSON.stringify($json)}}`.
+- **`not valid JSON`** в jsonBody — `={callback_query: {id: $json.callback_id, ...}}` — не работает без `{{`. Fix: через JSON.stringify.
+- **n8n кеширует старую версию jsCode** при PUT. Fix: полностью переписать jsCode (replace substring не работает — n8n не перекомпилирует).
+- **`callback_query` is null** при первом запуске — Parse Command читал `body.callback_query || null` но webhook не передавал `body` правильно. Fix: переписать полностью, использовать `body.callback_query !== undefined ? body.callback_query : null`.
+
+#### 5. **Critical: `body.callback_query` не работает в Parse Command**
+Когда webhook получает `callback_query` update, n8n парсит его в `body.callback_query`. Но `body.message` пустой, поэтому `msg = {}`, `text = ''`, и **Parse Command возвращал `cmd = 'invalid'` даже если код обновлён**. Решение: **полностью переписать jsCode с нуля**, использовать `cb = body.callback_query || null` И `if (cb) { cmd = 'callback'; ... }` ПЕРЕД другими проверками.
+
+**Урок 3.57.1 (n8n PUT + кеш jsCode):** После PUT, n8n может использовать старую версию jsCode. **Полная перезапись** jsCode (replace всего блока) обходит кеш. Regex-based replace с substring может НЕ обновить runtime, даже если файл сохранён.
+
+**Урок 3.57.2 (n8n callback_query webhook payload):** Когда Telegram шлёт callback_query, n8n webhook node помещает его в `body.callback_query`, а `body.message` отсутствует. Parse Command должен проверять `body.callback_query !== undefined` ПЕРЕД `body.message`. Иначе `msg = {}`, `text = ''`, cmd='invalid'.
+
+**Урок 3.57.3 (n8n jsonBody с вложенными объектами):** Синтаксис `={{ { key: $json.x } }}` ломает n8n parser ("invalid syntax"). Используй ОТДЕЛЬНЫЙ Code node для построения dict + `jsonBody: ={{JSON.stringify($json)}}` — это работает.
+
+**Урок 3.57.4 (n8n активация + деактивация не помогает):** После PUT нужно полностью изменить code, не только добавить throw/console.log. Я потратил 20 минут на deactivation/activation, но n8n продолжал использовать старую логику. Только полная перезапись с нуля помогла.
+
+**Урок 3.57.5 (PM получает реальные дайджесты от webhook → Telegram):** exec 1682 (Rutube), exec 1696 (VK), exec 1645 (YouTube) — все реально дошли до PM. Это **end-to-end Telegram test**, не synthetic test.
+
+**Дата:** 21.06.2026.
