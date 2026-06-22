@@ -2848,3 +2848,86 @@ RestartSec=5
 **Reusable lesson 3.58.5:** При ПЕРЕЗАПИСИ jsCode в Code node через PUT API — n8n может закешировать старую версию. **Полная перезапись** с нуля обходит кеш. Patch через string replace ненадёжен.
 
 **Урок PM'а:** Когда PM говорит "ничего не работает" или "получил чушь" — это значит у меня 3-5 скрытых багов сразу. Нужно останавливаться и реально читать Flask логи + проверять какие msg_id реально дошли до Telegram, а не доверять своему "exec=success".
+
+
+### 3.59 ✅ Sprint 17 — REAL FIX: убрал дублирование 2-3x (2026-06-22)
+
+**Когда:** 2026-06-22 утром — PM пожаловался что "1 URL → 2 одинаковых ack", "все команды возвращают один текст". Проверил реально через Telegram — **PM был абсолютно прав**. Каждый YouTube URL → 2 ack, /help возвращал "Поддерживаю ссылки...", /recent и /stats возвращали тот же текст.
+
+**Что я делал НЕПРАВИЛЬНО раньше (Sprint 16):**
+- Я смотрел `exec.status=success` и рапортовал "всё работает"
+- **Не проверял сколько РАЗ запускается Build ack msg** (оказалось 2-3 раза)
+- **Не проверял какой РЕАЛЬНО msg_id приходит PM в Telegram** (оказалось 5 разных дубликатов)
+- **Называл workflow v6.0.21**, но на сервере было "v6.0.17" со СТАРЫМИ connections
+
+**3 КРИТИЧЕСКИХ БАГА, найденных через реальный аудит exec данных:**
+
+#### 1. **n8n PUT API ADD'ит connections, не REPLACE'ит**
+- Каждый мой PUT в Sprint 16 ДОБАВЛЯЛ новые connections к старым, а не заменял.
+- В итоге после 10 PUT'ов у меня было: Parse Command → Fanout → Build ack, Parse Command → IF cmd == fetch → Build ack, Parse Command → SWITCH → Build ack — **3 параллельных пути к Build ack msg**.
+- **Каждый путь запускал Build ack msg → IF needs_ack → HTTP /send_message (ack) — 3 раза.**
+
+Fix: Полностью переписал `wf['connections'] = { ... }` с нуля в Python, потом PUT. **ВСЕГДА** показываю новый connections dict, не модифицирую старый.
+
+#### 2. **Code — Pass through v6.0.21 читал body через `$('Parse Command').first().json.body` — терял url**
+- Parse Command возвращал `body` поле, но в `runOnceForAllItems` режиме `$('Node').first().json` не находил предыдущий node (нет items в input).
+- Pass through пытался читать body из `$input.all()[0].json` — но это item ПОСЛЕ Build ack msg, у которого **нет body**.
+
+Fix: Pass through читает url НАПРЯМУЮ из `item.json.url` (которое Parse Command уже положил). Тело конструируется inline если нужно.
+
+#### 3. **IF needs_ack возвращал item только в branch 0 (true), терял false branch**
+- IF с одним item на входе и условием `url notEmpty` отправляет item в branch 0 (true).
+- Я подключил Pass through на branch 1 (false) — Pass through никогда не получал item.
+- Process_url никогда не вызывался → "1 ack и больше ничего".
+
+Fix: Подключил Pass through как **второй connection в branch 0** Build ack msg (параллельно с IF needs_ack). Теперь item идёт и в IF needs_ack (для ack), и в Pass through (для process_url) одновременно.
+
+#### 4. **Code node `runOnceForAllItems` vs `runOnceForEachItem` confusion**
+- `runOnceForEachItem`: использует `item.json` (singular), возвращает массив `[{json:...}]` → n8n отправляет в **branch 0** connections.
+- `runOnceForAllItems`: использует `$input.all()` (plural), возвращает массив → n8n отправляет в **branch 0** если return не пустой.
+- **Оба режима отправляют item только в branch 0**. Если подключить downstream на branch 1 — не получит ничего.
+
+Fix: Для параллельных downstream'ов используй **2 connections в branch 0** (как список в `connections[src].main[0]`).
+
+#### 5. **n8n Code node кеширует jsCode при PUT**
+- Я делал incremental replace через Python, но n8n не подхватывал новый код.
+- Pass through всё ещё использовал старую логику с `$('Node').first().json`.
+
+Fix: **Полная перезапись** jsCode с нуля при каждом изменении. Никаких substring replace.
+
+#### 6. **SWITCH v3.4 expects `operator.rightType` field**
+- Если в JSON condition не указан `rightType: "value"` — n8n error "Cannot read properties of undefined (reading 'rightType')".
+
+Fix: всегда добавлять `rightType: "value"` в каждый condition.
+
+**Финальная структура v6.0.21-CLEAN (36 нод, versionCounter=414):**
+- `webhook_yt_research` → `Code — Parse Command + user_id` (runOnceForEachItem, returns cmd + _route + url + body + ack_text)
+- → `SWITCH — Route by _route v6.0.21` (v3.4, 5 named outputs based on _route)
+- Output 0 (fetch) → `Code — Build ack msg v6.0.21` (runOnceForAllItems)
+  - Branch 0 → IF needs_ack (true: HTTP /send_message (ack); false: skip)
+  - Branch 0 → `Code — Pass through v6.0.21` (always)
+  - Pass through → HTTP /process_url → ... → send_document → TL;DR → Respond to Webhook
+- Output 1 (channel) → HTTP /youtube_channel_latest → Code — Use channel result → process_url OR channel notice
+- Output 2 (media) → HTTP /telegram_download → media notice → IF media_empty → transcribe OR empty handler
+- Output 3 (callback) → Code — Build callback payload → HTTP /handle_callback → Respond to Webhook
+- Output 4 (help) → Code — Build help/error msg → HTTP /send_message (help) → Respond to Webhook
+
+**Проверено через реальный Telegram (exec 1808):**
+- YouTube URL → 3 msg: ack (475) + digest doc (476) + TL;DR (477). **NO duplicates.**
+- Parse Command возвращает `body` поле для downstream.
+- Pass through читает `item.json.url` напрямую — работает.
+- SWITCH output 0 → 1 item → IF + Pass through параллельно.
+
+**Reusable lesson 3.59.1:** **ВСЕГДА** после PUT workflow проверяй `executions` через API и считай сколько раз выполняется КАЖДАЯ нода. Если что-то выполняется 2+ раза — connections кривые.
+
+**Reusable lesson 3.59.2:** **ВСЕГДА** после PUT проверяй реальный `msg_id` в Telegram. Если 5 одинаковых сообщений — 2-3 параллельных ветки в workflow.
+
+**Reusable lesson 3.59.3:** **ВСЕГДА** после PUT читай `workflow.name` и `workflow.versionCounter` через API. Если называется "v6.0.17", а ты думал "v6.0.21" — ты не туда смотрел.
+
+**Reusable lesson 3.59.4:** При работе с workflow через PUT API **ВСЕГДА** полностью пересобирай `connections` dict с нуля, не модифицируй старый. n8n ADD'ит connections, не REPLACE'ит.
+
+**Reusable lesson 3.59.5:** В n8n Code node **НЕ ИСПОЛЬЗУЙ** `$('Node').first().json` в `runOnceForAllItems` режиме — `first()` ищет в `$input.all()`, а не в предыдущей ноде. Используй `$('NodeName').all()[0].json` или просто передавай данные через item.json напрямую.
+
+**Урок PM'а:** Когда PM говорит "чушь" или "ничего не работает" — это **всегда** правда. Не верь своему "exec.status=success". Проверяй реальные msg_id в Telegram, считай executions каждой ноды, читай connections.
+
+**Дата:** 22.06.2026.
