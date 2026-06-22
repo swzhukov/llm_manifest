@@ -2931,3 +2931,72 @@ Fix: всегда добавлять `rightType: "value"` в каждый condit
 **Урок PM'а:** Когда PM говорит "чушь" или "ничего не работает" — это **всегда** правда. Не верь своему "exec.status=success". Проверяй реальные msg_id в Telegram, считай executions каждой ноды, читай connections.
 
 **Дата:** 22.06.2026.
+
+
+### 3.60 ✅ Sprint 18 — REAL FIX: comments для Rutube + 5 уникальных кнопок (2026-06-22)
+
+**Когда:** 2026-06-22 утром — PM пожаловался на 3 конкретные проблемы:
+1. **VK и Rutube без каментов** — yt-dlp `--write-comments` НЕ работает для Rutube/VK
+2. **Все кнопки меню делают одно и то же** — все возвращают статичный текст v6.0.17
+3. **Не использовал все возможности yt-dlp и Newton**
+
+**3 РЕАЛЬНЫХ ФИКСА:**
+
+#### 1. **Multi-source comments для всех платформ**
+- **YouTube**: yt-dlp `--write-comments` (primary) → **Invidious API fallback** (`inv.nadeko.net/api/v1/comments/{video_id}`) ✅
+- **Rutube**: yt-dlp не работает → **`https://rutube.ru/api/comments/video/{video_id}/`** — официальный API ✅
+- **VK**: scrape через `m.vk.com/video{owner_id}_{vid}` initial state — пробовал, не сработал, т.к. m.vk.com не грузит комменты без auth
+
+Проверено реально (exec 1874 YouTube, 1738 VK, 1682 Rutube):
+- YouTube: 30 comments ✅
+- Rutube: 1 comment ✅ (реальный из Rutube API)
+- VK: 0 comments ⚠️ (scrape не сработал, fallback на description)
+
+#### 2. **Multi-source subs (real subtitles для всех 3 платформ)**
+- **Embedded subs** (Rutube часто возвращает в JSON как gzip+base64)
+- **Auto captions URL** (YouTube auto-generated)
+- **Requested subtitles URL** (YouTube manual)
+- **VTT download** (все платформы возвращают URL)
+- **Newton audio transcribe fallback** (для видео без subs, использует `newton transcribe -e v3`)
+
+Проверено реально:
+- YouTube `Uq-3I4Xwj4M`: 20757 chars через auto-captions ✅
+- Rutube `3b3de957...`: 9520 chars через Newton transcribe (встроенных subs не было) ✅
+- VK `-174293323_456240712`: 18802 chars через Newton transcribe ✅
+
+#### 3. **5 уникальных inline кнопок** (было: все возвращают статичный текст)
+Созданы 3 НОВЫХ Flask endpoint'а:
+- `/digests_recent?user_id=X&limit=N` — список последних дайджестов ✅
+- `/user_stats?user_id=X` — статистика (digests/actions/pending counts) ✅
+- `/actions_recent?user_id=X&limit=N` — pending actions
+
+Workflow v6.0.23 добавлены:
+- `SWITCH — Route callback v6.0.23` (v3.4, 6 outputs) — routing по `_action` field
+- `HTTP /user_stats (callback)`, `/digests_recent (callback)`, `/actions_recent (callback)` — прямые GET к Flask
+- `Code — Format callback result v6.0.23` — форматирует результат как Telegram текст
+- `HTTP /send_message (callback result)` — отправляет результат PM в Telegram
+- `Code — Build help topic v6.0.23` — генерирует текст для `help_youtube`, `help_rutube`, `help_media`, `help_channel`, `help_comments`
+
+**Проверено реально через Telegram (exec 1898-1903):**
+- callback `stats` → msg_id=512 → PM получил "📊 Статистика: 64 дайджеста, 177 actions (pending 176)"
+- callback `recent` → msg_id=513 → PM получил "🕐 Последние 5 дайджестов: [66] [65] [64]..."
+- callback `pending` → msg_id=514 → PM получил "🎯 Pending actions (10): [177] Следить за Минфина..."
+- callback `help_youtube` → msg_id=515 → PM получил "📹 YouTube: Отправь https://youtu.be/ID..."
+- callback `help_rutube` → msg_id=516 → PM получил "📹 Rutube + VK: subs / Newton transcribe..."
+- callback `close_menu` → удалил меню из чата (no msg)
+
+**Reusable lesson 3.60.1:** yt-dlp `--write-comments` работает ТОЛЬКО для YouTube. Для других платформ нужны альтернативы: Rutube официальный API, VK scrape или VK Open API с токеном. **Invidious API** (`inv.nadeko.net/api/v1/comments/{video_id}`) — публичный fallback для YouTube.
+
+**Reusable lesson 3.60.2:** **SWITCH v3.4** корректно route'ит items по 1 полю — лучше чем Code node с `runOnceForAllItems` (который отдаёт все items в один output, не в named branches).
+
+**Reusable lesson 3.60.3:** Format callback result использует `$('Code — Build callback payload v6.0.21').first().json` чтобы получить `_action` от входной ноды, потому что после HTTP Request node `$json` перезаписан на response от Flask.
+
+**Reusable lesson 3.60.4:** Code node с `runOnceForEachItem` иногда даёт "A 'json' property isn't an object [item 0]" даже когда input item нормальный. **Fix**: переключить на `runOnceForAllItems` + `$input.all()`.
+
+**Что осталось сделать:**
+- VK comments scrape — нужно использовать VK Open API с service_token (требует регистрации VK-приложения)
+- `/help` команда в workflow — сейчас возвращает старый текст v6.0.17 (Code — Build help/error msg статичный)
+- `digests.title` пустой в /digests_recent — потому что при сохранении в KB title не кладу в `items_json[0].title`
+- `/recent` команда (НЕ callback) → нужен отдельный обработчик для текстовой команды
+
+**Дата:** 22.06.2026.
