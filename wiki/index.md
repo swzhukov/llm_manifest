@@ -10,7 +10,8 @@ created: 2026-06-15
 | [SCHEMA.md](./SCHEMA.md) | `meta` | Структура, правила ведения |
 | [AGENTS.md](./AGENTS.md) | `meta` | 4 принципа Карпатого |
 | [README.md](./README.md) | `meta` | Оглавление |
-| [glossary.md](./glossary.md) | `meta` | Термины и определения |
+| [glossary.md](./glossary.md)
+| [HANDOFF-research-agent-v6.0.27.md](./HANDOFF-research-agent-v6.0.27.md) | `meta,handoff` | Полный снимок research-agent на 2026-06-23 для нового диалога | | `meta` | Термины и определения |
 | [session-summaries.md](./session-summaries.md) | `meta` | Хронология диалога |
 | [pending.md](./pending.md) | `meta` | Отложенные вопросы |
 | [log.md](./log.md) | `meta` | Журнал изменений |
