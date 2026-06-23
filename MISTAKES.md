@@ -3050,3 +3050,64 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.61.6:** Code node в n8n с `$('Code — Build Digest').first().json` — рефер по **node.name**, не по id. Если имя не совпадает — runtime error "Referenced node doesn't exist".
 
 **Дата:** 23.06.2026.
+
+
+### 3.62 ✅ Sprint 20 — переписал меню + audio как опция + /stats /recent /pending /audio текст + Bot Menu (2026-06-23)
+
+**Когда:** 2026-06-23 — PM попросил убрать audio из auto-flow, переписать меню, продолжить всё остальное.
+
+**Что сделал:**
+
+#### 1. **Audio digest — убрал из main flow**
+- Раньше: каждый YouTube-дайджест → + MP3 голосом Бурунова (PM не просил)
+- Теперь: audio только по кнопке "🎙 Аудио" в меню
+- Кнопка берёт последний дайджест → озвучивает → отправляет
+- Workflow v6.0.25 → v6.0.26: убрал 2 ноды из auto-chain (Build audio text, send_audio)
+
+#### 2. **Переписал главное меню /help**
+- 6 кнопок: 📊 Статистика, 🕐 Последние, ⏳ Pending, 🎙 Аудио, 📖 Справка, ✖ Закрыть
+- Reply_markup корректно передаётся через `{{JSON.stringify({...reply_markup: $json.reply_markup...})}}`
+- Кнопка "📖 Справка" → подменю help_docs (с темами youtube/rutube/vk/kinescope/media/channel/comments/audio)
+- Кнопка "✖ Закрыть" → удаляет меню (deleteMessage)
+
+#### 3. **Добавил 4 текстовых команды**
+- `/stats` → как callback 'stats' (счётчики)
+- `/recent` → как callback 'recent' (5 последних)
+- `/pending` → как callback 'pending' (pending actions)
+- `/audio` → как callback 'audio_last' (озвучить последний)
+- В Code — Parse Command: text === '/stats' → _route='callback', callback_data='stats'
+- SWITCH output 5 → Code — Find last digest v6.0.26 → /digests_recent (last) → Build audio → /audio_digest → /send_audio → Respond
+
+#### 4. **digests_recent.title fix**
+- Bug: kb_save пишет `items_json = json.dumps({title, summary, meta, actions_count})` — это DICT
+- А digests_recent читал `items[0].title` — ожидал LIST
+- Fix: `isinstance(items, dict)` → `items.get('title')` else `items[0].title`
+- Тест: id=67 "TEST v6.0.26 digest" — title показывается ✅
+
+#### 5. **Persistent Bot Menu (setMyCommands)**
+- 6 команд: /start, /help, /stats, /recent, /pending, /audio
+- Вызывается через Telegram API `setMyCommands` 
+- Endpoint /set_my_commands уже существовал — обновил дефолтные commands
+
+#### 6. **Workflow v6.0.26, 50 нод**
+- 5 новых нод: Code — Find last digest, HTTP /digests_recent (last), Code — Build audio from last, HTTP /audio_digest (last), HTTP /send_audio (last)
+- Real test (exec 1974): YouTube → 17/17 SUCCESS, без audio
+- Real test (exec 1970): audio_last callback → 11/11 SUCCESS, audio отправлено
+
+**VK comments — нужен service_token:**
+- Тест: api.vk.com/method/video.getComments → 401 "token required"
+- m.vk.com scrape → JS-рендеринг, без auth ничего нет
+- **Решение**: PM регистрирует VK-приложение → получает service_token → кладёт в .env как VK_SERVICE_TOKEN
+- Endpoint /process_url готов принимать VK_SERVICE_TOKEN: добавил бы логику при наличии токена
+
+**Reusable lesson 3.62.1:** **n8n connections не обновляются если они уже есть**. Нужно force version bump через добавление setting или изменение node.id. Прямое `conns[src][...] = [...]` в JSON может не применяться.
+
+**Reusable lesson 3.62.2:** **n8n HTTP node jsonBody** с `{{ }}` + spread: `{{JSON.stringify({...($json.x ? {x: $json.x} : {})})}}` — рабочий паттерн для conditional fields (например, `reply_markup` опционально).
+
+**Reusable lesson 3.62.3:** **n8n Code node с SWITCH v3.4** — для каждого `_action` нужно явно прописать ветку в Code (Build callback payload), иначе SWITCH уходит в default и ничего не происходит. **Всегда** при добавлении нового _action добавлять его в Build callback payload.
+
+**Reusable lesson 3.62.4:** **kb_save пишет items_json = DICT** (для одного дайджеста), но **digests_recent** ожидал LIST (для multiple items). Сделал robust: поддерживает оба формата через `isinstance(items, dict)`.
+
+**Reusable lesson 3.62.5:** **Persistent Bot Menu** через `setMyCommands` — лучше чем inline кнопки в каждом сообщении. Telegram показывает кнопку "Меню" внизу чата. Endpoint уже был в /set_my_commands.
+
+**Дата:** 23.06.2026.
