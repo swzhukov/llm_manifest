@@ -821,6 +821,138 @@ def llm_call():
 
 ---
 
+### 5.9 Модульная архитектура research-agent (post-Sprint 22, 2026-06-23)
+
+**Проблема (до Sprint 22):** `newton-api.py` был урезан до 107 строк, все endpoints — 404, workflow v6.0.27 показывал "success" но реально выполнял 6 из 50 нод.
+
+**Решение:** Blueprint-loader pattern с `core/app.py` + пакетами `packages/*/routes.py`.
+
+**Структура на VPS:**
+```
+/opt/beget/n8n/
+├── newton-api.py           # тонкая обёртка, импортирует core.app
+├── core/app.py             # 162 строки: Flask init, auth, /health_full, load_packages(app)
+├── packages/                # в /opt/beget/n8n/research-agent/packages/
+│   ├── research/routes.py  # def register(app): — 770 строк, 14 платформ
+│   ├── kb/routes.py        # def register(app): — 949 строк, SQLite + render
+│   ├── telegram_bot/routes.py  # def register(app): — 321 строк, sendMessage/audio
+│   └── kb/schema.py        # init_kb() — auto-init SQLite schema
+├── kb/research.db          # реальная БД (372 KB, 66 digests, 6 tables)
+└── api.log                 # structured logging
+```
+
+**newton-api.py (12 строк):**
+```python
+#!/usr/bin/env python3
+"""newton-api.py — modular Flask entry (Sprint 22+)."""
+import sys
+sys.path.insert(0, '/opt/beget/n8n/research-agent')
+from core.app import app
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
+```
+
+**core/app.py — что делает (162 строки):**
+1. `create_app()` — Flask init, JSON_SORT_KEYS=False, START_TS
+2. `get_allowed_users()` / `is_authorized()` — auth gate через `ALLOWED_TELEGRAM_USERS`
+3. `unauthorized_response()` — 403 JSON
+4. `@app.route('/')` — service info (version 6.0.1)
+5. `@app.route('/health_full')` — RAM/disk/load/uptime/auth/last_error/ts
+6. `@app.errorhandler(Exception)` — global 500 handler, записывает в LAST_ERROR
+7. `load_packages(app)` — главный loader:
+   - Добавляет `/opt/beget/n8n/research-agent/` в sys.path
+   - Импортирует `packages.{research,kb,telegram_bot}.routes`
+   - Вызывает `register(app)` для каждого пакета
+   - При ошибке регистрации: `log.error` + `sys.exit(1)` (критично — иначе silent fail, см. MISTAKES §3.64.2)
+
+**Паттерн `def register(app)` в пакетах:**
+```python
+# packages/research/routes.py
+def register(app):
+    @app.route('/process_url', methods=['POST'])
+    def process_url():
+        from core.app import is_authorized, unauthorized_response
+        if not is_authorized():
+            return unauthorized_response()
+        # ... бизнес-логика
+        return jsonify({...})
+
+    @app.route('/transcribe', methods=['POST'])
+    def transcribe(): ...
+    # ... остальные 16 endpoints
+```
+
+**KB schema — авто-инициализация при импорте:**
+```python
+# packages/kb/schema.py
+KB_DB = '/opt/beget/n8n/kb/research.db'
+
+def init_kb():
+    os.makedirs(os.path.dirname(KB_DB), exist_ok=True)
+    con = sqlite3.connect(KB_DB)
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS sources (...);
+        CREATE TABLE IF NOT EXISTS claims (...);
+        CREATE TABLE IF NOT EXISTS digests (...);
+        CREATE TABLE IF NOT EXISTS actions (...);
+        CREATE TABLE IF NOT EXISTS user_profile (...);
+        CREATE TABLE IF NOT EXISTS seen_updates (...);
+    ''')
+    con.commit()
+
+try:
+    init_kb()  # вызывается один раз при импорте
+except Exception as e:
+    log.error('KB init failed: %s', e)
+    sys.exit(1)
+```
+
+**Systemd (`/etc/systemd/system/newton-api.service`):**
+```ini
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/beget/n8n
+EnvironmentFile=/opt/beget/n8n/.env
+ExecStartPre=/bin/bash -c 'fuser -k 8080/tcp 2>/dev/null; sleep 2'
+ExecStart=/usr/bin/python3 newton-api.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/flask.log
+StandardError=append:/tmp/flask.log
+```
+
+**Smoke test после deploy:**
+```bash
+# 1. Все endpoints должны вернуть 200
+for ep in / /health_full /user_profile /user_stats /digests_recent /newton_voices; do
+  curl -sL -w "  HTTP=%{http_code}\n" "http://localhost:8080$ep" \
+    -H "X-Telegram-User-Id: 261540559" | head -1
+done
+
+# 2. /seen_update dedup работает
+curl -sL -X POST http://localhost:8080/seen_update \
+  -H "X-Telegram-User-Id: 261540559" \
+  -H "Content-Type: application/json" \
+  -d '{"update_id":99999}'
+# {"age":<sec>,"seen":true,"update_id":99999} — если недавно был
+# {"seen":false,"update_id":99999} — если TTL истёк (5 мин)
+```
+
+**Anti-pattern (НЕ делать):**
+- ❌ Урезать `core/app.py` до минимума без Blueprint loader (MISTAKES §3.64)
+- ❌ Удалить `load_packages(app)` — все endpoints 404, workflow "success" но 6/50 нод
+- ❌ `def register(app)` без `from core.app import is_authorized` — auth gate сломается
+- ❌ Импорт `packages.research.routes` из `core/app.py` напрямую (должен быть `load_packages(app)` паттерн)
+- ❌ Hardcoded `/opt/beget/n8n/kb.db` — реальный путь `/opt/beget/n8n/kb/research.db`
+
+**End-of-state на 2026-06-23 (после Sprint 22):**
+- 22 endpoint зарегистрировано (research: 17, kb: 16+, telegram_bot: 6+)
+- E2E webhook тест: `POST /process_url → /user_profile → /yagpt_summarize → /comments_analyze → /render_digest → /send_document → /send_message` = 24 сек, 0 ошибок
+- Execution 2056: SUCCESS, 17/50 нод, 0 errors (alternate paths не тестировались)
+
+---
+
 ## 6. YandexGPT интеграция
 
 ### 6.1 Файл `yandex_gpt.py` (общий)
