@@ -3171,3 +3171,49 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.63.5:** При **переименовании ноды** в n8n — ВСЕ `$('Old Name')` в jsCode других нод надо обновить. Иначе silent fail: "Referenced node doesn't exist" в HTTP Request nodes.
 
 **Дата:** 23.06.2026.
+
+---
+
+### 3.64 (Sprint 22 — 2026-06-23) — newton-api.py shim disaster: 44/50 нод workflow молча падали
+
+**Контекст:** В какой-то момент (предположительно во время рефакторинга Sprint 18-21) `newton-api.py` на VPS был урезан с полной Blueprint-конфигурации до 107 строк с единственным endpoint `/`. Пакеты `research-agent/packages/{research,kb,telegram_bot}` лежали готовые (2040 строк, 3 файла с `def register(app)`), но **НИКУДА НЕ ПОДКЛЮЧАЛИСЬ**.
+
+**Симптомы:**
+- `/health` → 404 (endpoint отсутствует)
+- `/process_url` → 404
+- `/seen_update` → 404
+- `/audio_digest` → 404
+- `/user_profile` → 404
+- `/kb_save` → 404
+- **Workflow v6.0.27** показывал "success" в n8n executions, но реально выполнял только 6 из 50 нод (parse command + help branch + Respond to Webhook 200 OK).
+- В Telegram PM получал только ответы на `/start` и `/help` — все URL падали "молча" (Respond to Webhook уходил до фактической работы).
+- `kb.db` (legacy) = 0 байт. Реальная БД: `/opt/beget/n8n/kb/research.db` (372 KB, 66 digests, schema применяется автоматически при импорте `packages/kb/schema.py`).
+
+**Recovery (Sprint 22, ~30 минут):**
+1. Бэкап `/opt/beget/n8n/backups/sprint22-2026-06-23/` (newton-api.py, packages/, kb.db, service)
+2. Достал `core/app.py` (162 строки, blueprint loader) из `swzhukov/AnalizIstochnikov` master ветки
+3. Заменил `newton-api.py` на тонкую обёртку:
+   ```python
+   import sys
+   sys.path.insert(0, '/opt/beget/n8n/research-agent')
+   from core.app import app
+   if __name__ == '__main__':
+       app.run(host='0.0.0.0', port=8080)
+   ```
+4. `systemctl daemon-reload && systemctl restart newton-api`
+5. Smoke test 8 endpoints → все HTTP 200
+6. E2E webhook тест с YouTube URL: `POST /process_url → /user_profile → /yagpt_summarize → /comments_analyze → /render_digest → /send_document → /send_message` = **24 сек, 0 ошибок**.
+
+**Reusable lesson 3.64.1:** **Endpoint health check MUST exist на всех этапах.** Без `/health` (или `/health_full`) ты не узнаешь что Flask урезан, пока PM не начнёт жаловаться на "не работает". Lesson: добавить `/health_full` в `core/app.py` (уже есть, RAM/disk/load/last_error) + периодический cron `curl /health_full → /tmp/health.log`.
+
+**Reusable lesson 3.64.2:** **n8n execution "success" ≠ workflow работал.** `responseMode=responseNode` + Respond to Webhook сразу после ack → execution завершается "success" по HTTP, но реальная работа в последующих нодах может падать молча. Lesson: в тестах проверять `executedNodes / totalNodes` ratio + логи Flask `/api.log`, не только `execution.status`.
+
+**Reusable lesson 3.64.3:** **Backup перед каждым refactorом** (даже если "я просто строчку удалю"). В Sprint 18-21 кто-то удалил Blueprint loader из `newton-api.py` — БЕЗ бэкапа. Lesson: `cp newton-api.py backups/newton-api.py.pre-sprintXX.bak` перед ЛЮБЫМ изменением в проде.
+
+**Reusable lesson 3.64.4:** **Systemd ExecStartPre `fuser -k 8080/tcp`** в `newton-api.service` убивает Flask порт. Если Flask упал с traceback в `__init__`, systemd рестартует через `RestartSec=5`. Но если traceback в `load_packages(app)` → `sys.exit(1)` → systemd рестарт по кругу. Lesson: `load_packages` должен `try/except` с WARNING логом и продолжением, а не `sys.exit(1)`.
+
+**Reusable lesson 3.64.5:** **`core/app.py` + `packages/*/routes.py:def register(app)`** — рабочий паттерн для modular Flask. Каждый пакет автономен, Blueprint loader регистрирует все endpoints за один проход. Schema (`packages/kb/schema.py`) автоинициализируется при импорте модуля (с try/except вокруг `init_kb()`). Это anti-fragile: упала одна таблица — не упало всё приложение.
+
+**Reusable lesson 3.64.6:** **Real KB path = `/opt/beget/n8n/kb/research.db`**, НЕ `/opt/beget/n8n/kb.db`. HANDOFF.md ссылался на `kb.db` (legacy / несуществующий путь) — это ввело в заблуждение. Lesson: в новых wiki-файлах ВСЕГДА указывать реальные абсолютные пути, проверенные `ls -la`.
+
+**Дата Sprint 22:** 23.06.2026. **Восстановлено за 30 минут.**
