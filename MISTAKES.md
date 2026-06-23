@@ -3000,3 +3000,53 @@ Workflow v6.0.23 добавлены:
 - `/recent` команда (НЕ callback) → нужен отдельный обработчик для текстовой команды
 
 **Дата:** 22.06.2026.
+
+
+### 3.61 ✅ Sprint 19 — ALL Newton capabilities + audio digest + Kinescope (2026-06-23)
+
+**Когда:** 2026-06-23 — PM спросил "прочитал supportedsites.md? все возможности реализовал?".
+
+**Что добавил:**
+
+#### 1. **extract_video_id для 14 платформ (было 3)**
+- YouTube, Rutube, VK — как было
+- **Kinescope** — custom extractor через oembed API + master.m3u8 URL
+- **Vimeo, PeerTube (instance-specific), Dzen, Smotrim, VKPlay, Kinopoisk, Yandex Play, Apple Podcast, Google Podcast, SoundCloud** — новые patterns
+
+#### 2. **5 НОВЫХ Newton endpoints:**
+- `/newton_fetch` — `newton fetch <url> --diarize --wait` для YouTube
+- `/newton_transcribe` — все 4 engines: v3, parakeet, whisper, **diarize**
+- `/newton_voices` — список голосов (default, burunov, custom)
+- `/summarize` — `newton summarize` (llama/gpt4) — 401, не работает с текущим токеном
+- `/tts` — `newton tts` (текст → mp3/wav/opus)
+
+#### 3. **3 production endpoints:**
+- `/audio_digest` — дайджест → MP3 (Newton TTS, голос burunov) ✅
+- `/send_audio` — отправка audio в Telegram через multipart upload ✅
+- `/send_voice` — отправка voice message
+- `/diarize` — диаризация (кто что сказал)
+
+#### 4. **/process_url улучшения:**
+- `write_audio=True` по умолчанию для **всех non-YouTube платформ** (Newton fallback)
+- 4 Invidious + 3 Piped fallbacks для YouTube comments
+- Comments для Rutube через official API
+- Comments для VK через m.vk.com scrape (без токена — fallback на description)
+
+#### 5. **Workflow v6.0.25, 47 нод:**
+- 3 новых ноды: `Code — Build audio text v6.0.25`, `HTTP /audio_digest`, `HTTP /send_audio`
+- **Audio digest отправляется в Telegram как audio message** ✅
+- Real test (exec 1950): YouTube → 21/21 SUCCESS, msg_id 567 (audio 1MB)
+
+**Reusable lesson 3.61.1:** **Kinescope** НЕ поддерживается yt-dlp, но oembed API + master.m3u8 URL — рабочая альтернатива. Pattern: `https://kinescope.io/oembed?url=<page_url>` → JSON с `html` → regex `https?://[^"]+master\.m3u8[^"]+` → передать в yt-dlp.
+
+**Reusable lesson 3.61.2:** **Newton CLI** имеет 4 engines для transcribe: `v3` (GigaAM Russian), `parakeet` (multilingual), `whisper`, `diarize` (v3).
+
+**Reusable lesson 3.61.3:** **Telegram sendAudio/sendVoice** требует multipart upload — нельзя передать `audio` как JSON field с локальным path. Нужен Flask endpoint который открывает файл и отправляет через `files={'audio': (...)}`.
+
+**Reusable lesson 3.61.4:** Comments для VK — `m.vk.com` не грузит inline JSON для video с auth. **VK Open API `video.getComments`** требует `access_token`. Без токена scrape невозможен. Нужна регистрация VK-приложения для service_token.
+
+**Reusable lesson 3.61.5:** Newton API `/summarize` отдает `Malformed token: Not enough segments` для текущего NEWTON_TOKEN. Токен работает для transcribe/fetch/tts/voices, но не для summarize. Возможно summarize требует другой scope.
+
+**Reusable lesson 3.61.6:** Code node в n8n с `$('Code — Build Digest').first().json` — рефер по **node.name**, не по id. Если имя не совпадает — runtime error "Referenced node doesn't exist".
+
+**Дата:** 23.06.2026.
