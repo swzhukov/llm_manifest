@@ -9,12 +9,14 @@
 ## 0. Мета
 
 - **Дата handoff:** 2026-06-23
-- **Версия:** Research Agent v6.0.27 (workflow), Flask kb v6.0.24 + research v6.0.24 + telegram_bot
+- **Версия:** Research Agent v6.0.27 (workflow, active), **Flask v6.0.1 modular (post-Sprint 22 recovery)**
 - **Workflow ID:** `VGVepaHqmjg2PXSj`, versionCounter=586, active=True, **50 нод**
+- **Flask архитектура:** `newton-api.py` (12 строк обёртка) → `core/app.py` (162 строки) → `packages/{research,kb,telegram_bot}/routes.py` (2040 строк, register(app))
 - **Repo:** `https://github.com/swzhukov/AnalizIstochnikov`
-- **llm_manifest:** `https://github.com/swzhukov/llm_manifest` (ENVIRONMENT.md, MISTAKES.md §3.1-§3.63, wiki/)
+- **llm_manifest:** `https://github.com/swzhukov/llm_manifest` (ENVIRONMENT.md, MISTAKES.md §3.1-§3.64, wiki/)
 - **PM:** Сергей Жуков (Telegram user_id 261540559)
 - **Bot:** @ZhukovsFirstBot (token в `/opt/beget/n8n/.env`)
+- **Sprint 22 (2026-06-23):** восстановлен Flask из урезанного shim'а. Endpoints заработали. E2E webhook тест OK (24 сек, 0 errors). Подробности в §9.
 
 ---
 
@@ -684,3 +686,94 @@ curl -sL -X PUT -H "Authorization: token $GITHUB_LLM_MANIFEST_TOKEN" -H "Content
 ---
 
 **Конец HANDOFF.md. Сгенерирован Mavis 2026-06-23 в режиме per-step self-check.**
+
+---
+
+## 9. Sprint 22 — Flask recovery (2026-06-23, выполнен)
+
+### 9.1 Что было сломано
+`newton-api.py` (107 строк) был урезан до 1 endpoint `/`. Пакеты `packages/{research,kb,telegram_bot}/routes.py` (2040 строк, 3 файла) лежали на диске, но **НИКУДА НЕ ПОДКЛЮЧАЛИСЬ**.
+
+**Симптомы:**
+- `/health`, `/process_url`, `/seen_update`, `/audio_digest`, `/user_profile`, `/kb_save` → 404
+- Workflow v6.0.27 показывал "success" в n8n executions, но реально выполнял только 6/50 нод
+- В Telegram PM получал только ответы на `/start` и `/help`
+- `kb.db` = 0 байт (legacy путь). Реальная БД: `/opt/beget/n8n/kb/research.db`
+
+### 9.2 Что сделано (30 мин)
+1. ✅ Бэкап `/opt/beget/n8n/backups/sprint22-2026-06-23/` (newton-api.py + packages + kb.db + service)
+2. ✅ Достал `core/app.py` (162 строки) из `swzhukov/AnalizIstochnikov` master ветки
+3. ✅ Заменил `newton-api.py` на тонкую обёртку:
+   ```python
+   import sys
+   sys.path.insert(0, '/opt/beget/n8n/research-agent')
+   from core.app import app
+   if __name__ == '__main__':
+       app.run(host='0.0.0.0', port=8080)
+   ```
+4. ✅ `systemctl daemon-reload && systemctl restart newton-api`
+5. ✅ Все 3 пакета зарегистрировались: `[research] endpoints registered OK`, `[telegram_bot] endpoints registered OK`, `[kb] endpoints registered OK`
+6. ✅ KB schema автоинициализировалась: `/opt/beget/n8n/kb/research.db` (372 KB, 66 digests, 6 tables)
+7. ✅ Smoke test 8 endpoints → все HTTP 200
+8. ✅ E2E webhook тест с YouTube URL (`dQw4w9WgXcQ`) → execution 2056: SUCCESS, 17/50 нод, 0 errors, 24 сек от URL до отправки в Telegram
+
+### 9.3 Что протестировано ✅
+- `/` — service info (200)
+- `/health_full` — RAM 61%, disk 60%, load 1.3, uptime, auth, last_error (200)
+- `/user_profile` — профиль PM (261540559, ИИС A3, watchlist, цели — НЕ ПОТЕРЯН!)
+- `/user_stats` — пустой `{}` (нет данных для статистики, нужен реальный use)
+- `/seen_update` — dedup работает (POST возвращает age в секундах если seen)
+- `/digests_recent` — 10 последних дайджестов (включая 21.06.2026 экономика РФ, IMOEX падает)
+- `/newton_voices` — 2 голоса (default, burunov)
+- E2E URL → Telegram — полный pipeline (process_url → yagpt_summarize → comments_analyze → render_digest → send_document → send_message)
+
+### 9.4 Что НЕ протестировано ⚠️
+- 33 alternate path ноды (channel, media, callback, audio_last, help sub-topics)
+- `/kapital/*` endpoints — это **ДРУГОЙ проект** на том же Flask (НЕ ТРОГАТЬ)
+- Newton `/summarize` — 401, требует другой ключ
+- `/voices/upload` — кастомные голоса PM
+- Persistent Bot Menu buttons → реальный Telegram click
+
+### 9.5 Новая архитектура (v6.0.28 / Flask v6.0.1)
+
+```
+Telegram user → Traefik :443 → n8n webhook (50 нод)
+                                  ↓ HTTP
+                            Flask :8080 (newton-api.py → core/app.py)
+                                  ↓ load_packages(app)
+                            ┌─────┴─────┬──────────┐
+                            ↓           ↓          ↓
+                  packages/research  packages/kb  packages/telegram_bot
+                  (14 платформ)      (SQLite)      (sendMessage/audio)
+                            ↓           ↓          ↓
+                          yt-dlp    research.db  Telegram API
+                          Newton    (66 digests)
+                          YandexGPT
+```
+
+### 9.6 Известные проблемы (Sprint 23+)
+1. `/user_stats` возвращает `{}` — нет реальных данных для статистики (счётчики не ведутся, либо в user_stats нужны другие запросы)
+2. VK comments — нужен service_token от PM
+3. Newton `/summarize` — 401 (отдельный ключ, не тот что `NEWTON_TOKEN`)
+4. 33 alternate path ноды workflow не покрыты тестами — нужны отдельные smoke tests для `/help subtopics`, `/audio`, `/recent`, `/pending`, callback handlers
+5. `last_error` в `/health_full` показывает `/kapital/get_state 404` — это нормально (другой проект)
+
+### 9.7 Sprint 23+ roadmap (по приоритету)
+1. **Тесты alternate paths** — `/help` с inline buttons, `/audio`, `/recent`, `/pending`, callback handlers (~1 час, defensive coding + E2E)
+2. **VK comments** — нужен VK service_token, потом `/comments_analyze` для VK (Sprint 24, ~3 часа)
+3. **Newton `/summarize` fix** — посмотреть какой ключ нужен, добавить в `.env` (30 мин)
+4. **Статистика counters** — добавить счётчики в `user_stats` (sources count, last digest date, action completion rate) (~2 часа)
+5. **Persistent Bot Menu inline buttons** — сейчас только `setMyCommands`, можно добавить persistent buttons через `ReplyKeyboardMarkup` (опционально)
+6. **GitHub commit workflow** — `workflows/research-agent-v1.1.json` в репо УСТАРЕЛ (v1.1, не v6.0.27). Нужно экспортировать актуальный workflow через n8n API PUT в `workflows/research-agent-v6.0.27.json` (~30 мин)
+7. **HANDOFF refresh** — этот HANDOFF уже подустарел. После Sprint 23+ стоит перегенерить
+
+### 9.8 Lessons learned (cross-project)
+- ✅ **Health endpoint обязателен** — `/health_full` должен существовать с самого начала (MISTAKES §3.64.1)
+- ✅ **Backup перед каждым refactorом** — даже если "я просто строчку удалю" (MISTAKES §3.64.3)
+- ✅ **n8n "success" ≠ workflow работал** — проверять `executedNodes / totalNodes` ratio (MISTAKES §3.64.2)
+- ✅ **load_packages MUST `sys.exit(1)` при ошибке** — иначе silent fail, workflow показывает "success" с 6/50 нод (MISTAKES §3.64.2)
+- ✅ **Реальный путь БД** = `/opt/beget/n8n/kb/research.db`, не `/opt/beget/n8n/kb.db` (MISTAKES §3.64.6)
+
+---
+
+**Конец HANDOFF.md v6.0.28 (post-Sprint 22). Сгенерирован Mavis 2026-06-23 после восстановления Flask.**
