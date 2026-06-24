@@ -962,3 +962,35 @@ https://kinescope.io/embed/abc123                     → ('kinescope', 'abc123'
 
 **Lessons:** см. MISTAKES §3.69.
 
+
+---
+
+## 13. Sprint 28-30 (2026-06-24) — production hardening
+
+### 13.1 Sprint 30 — Deep clean БД
+- Удалены test-дайджесты из БД (TEST, Sprint 22-26 test data)
+- 66 → 64 digests (2 удалено)
+- Также удалены orphan actions (digest_id которых больше нет)
+
+### 13.2 Sprint 29 — Backup cron + logrotate
+- ✅ Daily backup cron `0 4 * * * /opt/beget/n8n/monitoring/backup_kb.sh`
+  - Backup `research.db` (gzipped) + `code_*.tar.gz` (newton-api.py + packages/)
+  - Хранение в `/opt/beget/n8n/backups/daily/` (30 дней истории)
+  - Тест: 59 KB DB + 112 KB code archive
+- ✅ Logrotate config в `/etc/logrotate.d/newton-api`
+  - Ротация `api.log` daily при >10 MB
+  - 7 дней истории, compress
+
+### 13.3 Sprint 28 — Persistent Reply Keyboard
+- ✅ Endpoint `/install_reply_keyboard` — устанавливает 6 кнопок внизу чата Telegram:
+  - `/stats` `/recent` `/pending` `/audio` `/help` `/health`
+- ✅ Endpoint `/remove_reply_keyboard` — убирает persistent keyboard
+- ✅ Placeholder: "Отправь URL или выбери команду ↓"
+- Тест: Telegram msg_id=914, persistent keyboard установлен
+
+### 13.4 Lessons (Sprint 28-30)
+- 13.4.1 **Test данные в БД накапливаются быстро** — добавить в cron еженедельный auto-cleanup test-дайджестов
+- 13.4.2 **Daily backup критичен для production** — без бэкапа любая ошибка = потеря всех digests/actions за 21+ спринт
+- 13.4.3 **Persistent keyboard ≠ setMyCommands** — это разные UX. setMyCommands = меню в боте, keyboard = кнопки внизу чата. Для личного use keyboard удобнее.
+- 13.4.4 **Insert endpoint ВНУТРИ register(app):** — def register ВНУТРИ register (Blueprint pattern). Не искать marker "def register(app):\n    \"\"\"" снаружи — все endpoints ВНУТРИ.
+
