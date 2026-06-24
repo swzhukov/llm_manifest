@@ -3242,3 +3242,29 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.65.6:** **При правке через sed с regex — всегда check output.** Sprint 23 fix для `/user_stats` использовал regex для удаления старого блока, но regex зацепил `def register(app):` (defunct блок). Flask упал с `module 'packages.kb.routes' has no attribute 'register'`. Fix: restore из backup + apply точечные правки (без regex на многострочные блоки).
 
 **Дата Sprint 23:** 24.06.2026. **A + B + D + E + G + F сделано за 3 часа.** C (VK) отложен.
+
+### 3.66 (Sprint 23.1 hotfix — 2026-06-24) — потерянный `@app.route('/yagpt_summarize')` = пустой дайджест в проде
+
+**Контекст:** PM отправил YouTube URL в Telegram → бот ответил "Дайджест отправлен" → HTML-дайджест пришёл с **"Краткое содержание (пусто)" и "Action items: Нет рекомендаций"**. Cron мониторинг поймал `/yagpt_summarize|404 Not Found`. PM подумал что Sprint 23 сломал бота.
+
+**Корневая причина:** В каком-то рефакторе Sprint 18-21 был удалён `@app.route('/yagpt_summarize', methods=['POST'])` декоратор, но сама функция (тело), helper `_yagpt_call`, `_parse_json_safe` остались на местах. Workflow продолжал вызывать endpoint → Flask возвращал 404 → `render_digest` рендерил HTML с пустым summary.
+
+**Как нашёл:** Cron health_check записал `/yagpt_summarize|404` в last_error → `/health_full` показал → сравнил bak файл `routes.py.bak-1782104537` с текущим через `grep -oE "@app\\.route\\([^)]+\\)" | sort -u` → увидел что bak имеет `/yagpt_summarize`, current нет.
+
+**Recovery (15 мин):**
+1. `cp routes.py.bak-1782104537 routes.py` (полная версия, 662 строки)
+2. `insert_youtube_endpoint.py` — добавил Sprint 23 `/youtube_channel_latest` (сохранил А)
+3. `systemctl restart newton-api`
+4. Тест `/yagpt_summarize` → 5 буллетов + 3 actions + 0.16₽ (YandexGPT ОК)
+
+**Reusable lesson 3.66.1:** **Endpoint health check обязателен на КАЖДЫЙ endpoint, не только `/health_full`.** Sprint 22 health check поймал `/yagpt_summarize|404`, который бы остался незамеченным без cron. Lesson: cron мониторинг должен проверять ВСЕ endpoints через smoke tests (не только `/health_full`).
+
+**Reusable lesson 3.66.2:** **`@app.route` декоратор отдельно от функции = хрупкий паттерн.** При рефакторе легко удалить декоратор, оставив тело функции. Lesson: использовать **Blueprint** с явной регистрацией `app.register_blueprint(bp)`, либо ставить `@app.route` СРАЗУ перед `def` без пустых строк (чтобы grep находил пару).
+
+**Reusable lesson 3.66.3:** **bak файлы в research-agent/ — это страховка.** При Sprint 22 recovery я нашёл `routes.py.bak-1782104537` (timestamp 1782104537 = ~2025-06-22) — это автоматический backup от какого-то инструмента (возможно Flask debug reloader). Lesson: не удалять `.bak` файлы в production директориях, переносить в `/backups/`.
+
+**Reusable lesson 3.66.4:** **`grep -oE "@app\\.route\\([^)]+\\)" | sort -u | diff - bak`** — надёжный способ найти missing endpoints. Lesson: добавить в MISTAKES как стандартную диагностическую процедуру при "endpoint не работает".
+
+**Reusable lesson 3.66.5:** **Backup `routes.py` перед ЛЮБЫМ рефакторингом — а не только newton-api.py.** Я делал backup `newton-api.py` (Sprint 22), но не делал backup `packages/*/routes.py`. Lesson: `cp packages/{research,kb,telegram_bot}/routes.py backups/pre-sprintXX-YYYY-MM-DD/`.
+
+**Дата Sprint 23.1 hotfix:** 24.06.2026. **Recovery 15 мин.** Полный E2E pipeline (process_url → yagpt_summarize → comments → render → send) = ~6 сек.
