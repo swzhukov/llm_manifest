@@ -838,3 +838,36 @@ Telegram user → Traefik :443 → n8n webhook (50 нод)
 
 **Конец HANDOFF.md v6.0.30 (post-Sprint 23 A-G, без VK). Сгенерирован Mavis 2026-06-24.**
 
+
+---
+
+## 11. Sprint 23.1 hotfix (2026-06-24) — восстановление `/yagpt_summarize`
+
+### 11.1 Что произошло
+PM отправил YouTube URL → бот вернул HTML-дайджест **с пустым summary и без actions**. Cron health_check поймал `/yagpt_summarize|404 Not Found`.
+
+### 11.2 Корневая причина
+В Sprint 18-21 был удалён `@app.route('/yagpt_summarize', methods=['POST'])` декоратор, но функция и helper'ы остались. Workflow вызывал endpoint → 404 → render_digest получал пустой текст.
+
+### 11.3 Recovery (15 мин)
+1. `cp routes.py.bak-1782104537 routes.py` — bak файл в production директории (auto-backup от какого-то инструмента) имел полную версию
+2. `insert_youtube_endpoint.py` — добавил Sprint 23 `/youtube_channel_latest`
+3. `systemctl restart newton-api`
+4. Тест: 5 буллетов + 3 actions + 0.16₽ за токены YandexGPT
+
+### 11.4 Что увидит PM
+Следующий URL от PM даст **полноценный дайджест с summary и actions**, не пустой.
+
+### 11.5 Lessons
+- 11.5.1 Endpoint health check на КАЖДЫЙ endpoint через cron smoke test (не только `/health_full`)
+- 11.5.2 `@app.route` рядом с `def` без пустых строк — легче grep'ать и труднее случайно удалить
+- 11.5.3 `.bak` файлы в production — НЕ удалять, переносить в `/backups/`
+- 11.5.4 Backup packages/*/routes.py перед рефакторингом (а не только newton-api.py)
+
+### 11.6 GitHub commits (Sprint 23.1)
+- `swzhukov/llm_manifest` MISTAKES.md: §3.66 — добавлено
+- HANDOFF обновлён (этот файл)
+
+---
+
+**Конец HANDOFF.md v6.0.31 (Sprint 22 + 23 + 23.1 hotfix). Сгенерирован Mavis 2026-06-24.**
