@@ -3309,3 +3309,31 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.68.3:** **Kinescope не даёт subs в oembed** — для длинных видео единственный способ получить content это Newton transcribe аудио. Lesson: для платформ без subs добавить audio transcribe fallback в universal handler.
 
 **Дата Sprint 25:** 24.06.2026. **2 fix за 20 мин.**
+
+### 3.69 (Sprint 26 — 2026-06-24) — Kinescope HLS защищён signed URLs + cookies → нельзя транскрибировать без auth
+
+**Контекст:** После Sprint 25 Newton transcribe fallback — Kinescope дайджест всё ещё пустой. PM пожаловался "пустой кинескоп".
+
+**Корневая причина:** Kinescope защищает HLS контент через:
+1. **Signed URLs** — `master.m3u8?expires=<timestamp>&sign=<hash>` (TTL ~30 мин)
+2. **Session cookies** — нужны для авторизации
+3. **Referer check** — Kinescope требует `Referer: kinescope.io`
+
+Даже с правильным signed URL получаем `403 Forbidden` без cookies.
+
+**Recovery (15 мин):**
+1. ✅ Добавил в `kinescope handler`:
+   - Парсинг HTML страницы для signed m3u8 URL (`https://kinescope.io/<video>/master.m3u8?expires=...&sign=...`)
+   - yt-dlp пытается скачать (но 403)
+   - Если < 200 chars в fallback_text → добавляем user-facing notice
+2. ✅ Результат: text = title + "⚠️ Kinescope защищает HLS через signed URLs + cookies. Без авторизации на kinescope.io транскрибация аудио невозможна. Открой ссылку в браузере для просмотра."
+3. ✅ char_count = 210 (было 50, title only)
+4. ✅ Syntax error fix: escape `'..."'` → `..."..."...` для `fallback_text +=`
+
+**Reusable lesson 3.69.1:** **HLS protection = signed URLs + cookies + Referer check.** Многие платформы (Kinescope, Vimeo Pro, Wistia) делают невозможным server-side download без авторизации. Lesson: fallback chain должен иметь **honest degradation** — title + user-facing message вместо ложных promise о транскрибации.
+
+**Reusable lesson 3.69.2:** **Quotes в Python f-string + JSON — осторожно.** `\\"\\\"` в JSON файле становится `"` в Python, и если контент содержит `'` или `"`, syntax error. Lesson: использовать `textwrap.dedent` или escape через `\\'`.
+
+**Reusable lesson 3.69.3:** **PM должен знать ПРАВДУ** — лучше честное "не могу скачать" чем ложное "обработано успешно" с пустым summary.
+
+**Дата Sprint 26:** 24.06.2026. **PM получает дайджест с метаданными + объяснение про защиту.**
