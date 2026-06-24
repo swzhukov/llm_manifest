@@ -3337,3 +3337,28 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.69.3:** **PM должен знать ПРАВДУ** — лучше честное "не могу скачать" чем ложное "обработано успешно" с пустым summary.
 
 **Дата Sprint 26:** 24.06.2026. **PM получает дайджест с метаданными + объяснение про защиту.**
+
+### 3.70 (Sprint 28-30 — 2026-06-24) — production hardening: persistent keyboard, backup cron, deep clean
+
+**Sprint 28: persistent ReplyKeyboardMarkup**
+- ✅ `/install_reply_keyboard` endpoint → 6 кнопок в чате: /stats, /recent, /pending, /audio, /help, /health
+- ✅ Telegram msg_id подтверждает установку
+
+**Sprint 29: backup cron + logrotate**
+- ✅ Cron `0 4 * * *` daily backup research.db + code (tar.gz) в `/opt/beget/n8n/backups/daily/`
+- ✅ Logrotate config в `/etc/logrotate.d/newton-api` (daily, 7 дней, >10 MB, compress)
+- ✅ Тест: 59 KB DB + 112 KB code archive
+
+**Sprint 30: deep clean БД**
+- ✅ Удалены test-дайджесты (Sprint 22-26 test data)
+- 66 → 64 digests
+
+**Reusable lesson 3.70.1:** **Все `@app.route` находятся ВНУТРИ `def register(app):`** — не снаружи. Искать маркер "последний except" для вставки нового endpoint внутри register, а не "def register" снаружи.
+
+**Reusable lesson 3.70.2:** **`setMyCommands` ≠ `ReplyKeyboardMarkup`.** Первое = меню в боте (через кнопку "Меню"), второе = кнопки внизу чата. Для personal use keyboard удобнее — пользователь видит кнопки сразу при открытии чата.
+
+**Reusable lesson 3.70.3:** **Daily backup research.db обязателен** для production. Без бэкапа потеря digests = потеря всей истории пользователя. SQLite `.backup` command безопаснее чем `cp` (consistency).
+
+**Reusable lesson 3.70.4:** **sqlite3 CLI не установлен на Beget VPS** — fallback на `cp` в backup script (но `.backup` команда лучше, consistency).
+
+**Дата Sprint 28-30:** 24.06.2026. **3 фичи за 1.5 часа.**
