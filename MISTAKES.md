@@ -3289,3 +3289,23 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.67.4:** **Cron мониторинг уже спасает — `kinescope 404` будет виден в api.log через 5 мин после первого теста.** Lesson: добавить smoke test для каждой платформы в cron (per-platform).
 
 **Дата Sprint 24:** 24.06.2026. **Fix 15 мин.**
+
+### 3.68 (Sprint 25 — 2026-06-24) — cron spam alerts от бот-сканирований + Kinescope fallback
+
+**Контекст:** PM пожаловался что cron шлёт ему алерты каждые 5 мин про `/SDK/webLanguage`, `/cgi-bin/luci/`, `/manager` — это боты сканируют Flask на известные эксплойты (Huawei роутер, OpenWRT, Tomcat).
+
+**Корневая причина:** cron health_check фильтровал только `kapital` (другой проект), но не фильтровал известные bot-scan паттерны. `last_error` обновляется при каждом 404, поэтому cron видел "новый" error каждые 5 мин.
+
+**Fix:**
+1. ✅ Добавлен список из 22 bot-паттернов в `health_check.sh`: SDK/webLanguage, cgi-bin/luci, manager, /.env, wp-admin, wp-login, phpmyadmin, /.git, /.svn, api/v1/users, boaform/admin, console, xmlrpc.php, solr/, actuator/, shell/, cmd/, config.json, api.json, /.aws/, login.action, admin.php, .bak, backup.sql
+2. ✅ Cron тест: `/manager|404` → пишет в health.log как OK, **НЕ шлёт alert**
+
+**Также найдена проблема:** Kinescope fallback (title + description) — только title, пустой summary в дайджесте для длинных видео. Fix: добавил Newton transcribe fallback в `/process_url` kinescope handler — если `fallback_text < 500 chars`, скачать аудио через yt-dlp и транскрибировать через Newton parakeet (5 мин max).
+
+**Reusable lesson 3.68.1:** **Cron мониторинг должен фильтровать известный шум** — bot-scan паттерны, legacy проекты, health-check endpoints самого мониторинга. Иначе alert fatigue → PM перестаёт читать алерты.
+
+**Reusable lesson 3.68.2:** **`last_error` field обновляется при каждом 404** — даже если это от ботов. Lesson: фильтровать по URL pattern (bot scans), не только по content.
+
+**Reusable lesson 3.68.3:** **Kinescope не даёт subs в oembed** — для длинных видео единственный способ получить content это Newton transcribe аудио. Lesson: для платформ без subs добавить audio transcribe fallback в universal handler.
+
+**Дата Sprint 25:** 24.06.2026. **2 fix за 20 мин.**
