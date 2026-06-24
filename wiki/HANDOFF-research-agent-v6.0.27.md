@@ -945,3 +945,20 @@ https://kinescope.io/embed/abc123                     → ('kinescope', 'abc123'
 
 **Lessons:** см. MISTAKES §3.68.
 
+
+### 12.9 Sprint 26 (2026-06-24) — Kinescope honest degradation
+
+**Что сделано:**
+1. ✅ Парсинг signed m3u8 URL из HTML страницы Kinescope
+2. ✅ yt-dlp пробует скачать (но 403 без cookies)
+3. ✅ Если fallback_text < 200 chars → добавляем user-facing notice
+4. ✅ Результат: дайджест с title + объяснение про HLS защиту
+
+**Что увидит PM:**
+- Title видео (из oembed)
+- Метаданные (platform, kind, external_id)
+- Notice: "⚠️ Kinescope защищает HLS через signed URLs + cookies. Без авторизации на kinescope.io транскрибация аудио невозможна."
+- Ссылка на оригинальное видео (в meta.url)
+
+**Lessons:** см. MISTAKES §3.69.
+
