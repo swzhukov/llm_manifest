@@ -916,3 +916,22 @@ https://kinescope.io/embed/abc123                     → ('kinescope', 'abc123'
 ---
 
 **Конец HANDOFF.md v6.0.32 (Sprint 22 + 23 + 23.1 + 24). Сгенерирован Mavis 2026-06-24.**
+
+### 12.7 Sprint 24.1 (2026-06-24) — Parse Command fix
+
+**Что было сломано:** даже после Sprint 24 fix в `process_url`, Parse Command code node в workflow не имел regex для Kinescope → отправлял в `cmd = 'invalid'` → "Эта ссылка не поддерживается".
+
+**Fix:**
+1. ✅ Добавил Kinescope regex в Parse Command: `kinescope\.io\/(?:embed\/)?([A-Za-z0-9_-]{6,64})(?:\/[A-Za-z0-9_-]+)?`
+2. ✅ Добавил ack_text: 'Понял, обрабатываю Kinescope видео...'
+3. ✅ Workflow PUT v586 → v587
+
+**Также найдена проблема:** Build YandexGPT payload нода читает `subs.text`, не `subs_text`. Kinescope handler возвращал только `subs_text`. Fix: добавил `text` поле + все нужные workflow fields (timeline, video_id, title, duration, method, char_count, comments, platform, kind).
+
+**PUT через n8n API:**
+- Только `name + nodes + connections + settings={}`
+- Read-only поля (active, settings.callerPolicy, settings.executionOrder, settings.binaryMode) НЕ передаются
+
+**Гитхаб commits:**
+- `swzhukov/AnalizIstochnikov` workflows/research-agent-v6.0.27.json: v587 (Kinescope regex)
+
