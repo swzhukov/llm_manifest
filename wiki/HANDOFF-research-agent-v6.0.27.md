@@ -935,3 +935,13 @@ https://kinescope.io/embed/abc123                     → ('kinescope', 'abc123'
 **Гитхаб commits:**
 - `swzhukov/AnalizIstochnikov` workflows/research-agent-v6.0.27.json: v587 (Kinescope regex)
 
+
+### 12.8 Sprint 25 (2026-06-24) — cron spam fix + Kinescope transcribe fallback
+
+**Что сделано:**
+1. ✅ Cron health_check фильтрует 22 bot-паттерна (SDK/webLanguage, cgi-bin/luci, manager, wp-admin, /.env, etc.)
+2. ✅ Kinescope handler fallback на Newton transcribe (parakeet) если title+description < 500 chars
+3. ✅ Health.log тест: `/manager|404` НЕ шлёт alert (фильтр работает)
+
+**Lessons:** см. MISTAKES §3.68.
+
