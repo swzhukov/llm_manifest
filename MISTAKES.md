@@ -3217,3 +3217,28 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.64.6:** **Real KB path = `/opt/beget/n8n/kb/research.db`**, НЕ `/opt/beget/n8n/kb.db`. HANDOFF.md ссылался на `kb.db` (legacy / несуществующий путь) — это ввело в заблуждение. Lesson: в новых wiki-файлах ВСЕГДА указывать реальные абсолютные пути, проверенные `ls -la`.
 
 **Дата Sprint 22:** 23.06.2026. **Восстановлено за 30 минут.**
+
+### 3.65 (Sprint 23 — 2026-06-24) — production hardening: endpoint gaps + hardcoded secrets + cron watchdog
+
+**Контекст:** Sprint 23 после Sprint 22 recovery. PM дал ОК на полный план A-G (без VK).
+
+**Найденные проблемы:**
+1. **Workflow v6.0.27 вызывал `/youtube_channel_latest` (HTTP нода), но endpoint НЕ БЫЛ в `packages/research/routes.py`.** Cron мониторинг слал alerts каждые 5 мин про 404. Fix: реализовал endpoint через `yt-dlp --flat-playlist` (60 строк кода, sprint 23 ~1 час).
+2. **Hardcoded Newton токен в `kb/routes.py`** — был `... or 'XmhocLHmdTFOf8NaqrdBCr4ai30o0XGxaGUckEqzrXk'` в 5 местах (env fallback). PM скомпрометировал токен через чат И код. Fix: убрал все hardcoded fallback'и (sed по 5 строкам).
+3. **Newton API возвращает 401 `Malformed token`** — потому что `bit-summarize.1bitai.ru` это LiteLLM proxy, требует `sk-XXXX` virtual key, а у нас access token. Fix: graceful 503 с actionable hint вместо 500.
+4. **`/user_stats` возвращал пустой `{}`** — потому что код искал `status` (Sprint 18+ schema), а реальная таблица имеет `acted` (0/1) и `feedback` (text). Fix: defensive coding + PRAGMA table_info check перед запросами.
+5. **Cron мониторинг отсутствовал** — узнавали о падениях только по жалобам PM. Fix: `*/5 * * * *` health_check + `*/30 * * * *` newton_watchdog с throttle 6h между alerts.
+
+**Reusable lesson 3.65.1:** **Workflow нода → endpoint = atomic deploy.** Workflow вызывает `/youtube_channel_latest`, но Flask не имеет этого endpoint — падает 404 молча, workflow продолжает работу с Respond to Webhook. Lesson: при создании HTTP ноды в n8n **сначала** создать endpoint + протестировать через curl, **потом** добавлять HTTP ноду в workflow.
+
+**Reusable lesson 3.65.2:** **Hardcoded secrets = утечка по определению.** Любой кто имеет доступ к git history видит токен через `git log -p`. Lesson: **никогда** hardcoded tokens/passwords, всегда `os.environ.get(...)`. Если env пуст — лучше упасть с ошибкой, чем тихо использовать hardcoded fallback.
+
+**Reusable lesson 3.65.3:** **LiteLLM proxy требует `sk-` virtual keys, не access tokens.** `api.1bitai.ru/openapi.json` показал `APIKeyHeader` scheme с ожиданием `sk-`. PM дал access token, не virtual key. Lesson: для любого LLM proxy (LiteLLM, OpenRouter, etc) — генерировать virtual key через admin endpoint `/key/generate`, **не** использовать master token.
+
+**Reusable lesson 3.65.4:** **Schema mismatch при UPDATE = silent fail.** `/user_stats` искал `status='pending'` в actions таблице, но реальная schema имеет `acted=0/1`. Endpoint возвращал пустой `{}`, не ошибку. Lesson: **всегда** делать `PRAGMA table_info(<table>)` перед написанием запросов к существующим таблицам. Schema может устареть (Sprint 18+ vs Sprint 6).
+
+**Reusable lesson 3.65.5:** **Cron + watchdog = production-grade monitoring.** `*/5 * * * *` health check (RAM/disk/last_error) + `*/30 * * * *` Newton watchdog с throttle 6h между alerts. Узнаём о падениях за 30 мин, не через жалобы. Lesson: добавлять cron **при каждом production deploy**, не после инцидента.
+
+**Reusable lesson 3.65.6:** **При правке через sed с regex — всегда check output.** Sprint 23 fix для `/user_stats` использовал regex для удаления старого блока, но regex зацепил `def register(app):` (defunct блок). Flask упал с `module 'packages.kb.routes' has no attribute 'register'`. Fix: restore из backup + apply точечные правки (без regex на многострочные блоки).
+
+**Дата Sprint 23:** 24.06.2026. **A + B + D + E + G + F сделано за 3 часа.** C (VK) отложен.
