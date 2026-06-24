@@ -3268,3 +3268,24 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.66.5:** **Backup `routes.py` перед ЛЮБЫМ рефакторингом — а не только newton-api.py.** Я делал backup `newton-api.py` (Sprint 22), но не делал backup `packages/*/routes.py`. Lesson: `cp packages/{research,kb,telegram_bot}/routes.py backups/pre-sprintXX-YYYY-MM-DD/`.
 
 **Дата Sprint 23.1 hotfix:** 24.06.2026. **Recovery 15 мин.** Полный E2E pipeline (process_url → yagpt_summarize → comments → render → send) = ~6 сек.
+
+### 3.67 (Sprint 24 — 2026-06-24) — Kinescope URL формат /<base62-id>/<hash> не поддерживался
+
+**Контекст:** PM отправил Kinescope URL → бот "❌ Эта ссылка не поддерживается". HANDOFF.md говорил про 14 платформ включая Kinescope, но реально regex не матчил URL формат с двумя сегментами.
+
+**Корневая причина:** `KINESCOPE_RE` поддерживал только `[0-9a-f]{8}-...-[0-9a-f]{12}` (UUID) и `[0-9]+` (числа). Реальный формат Kinescope URL — `/<base62-id>/<hash>` (например `m62ooCk2KbbvArqMy954bU`). Плюс yt-dlp не работает с Kinescope напрямую (403 Forbidden на прямой download).
+
+**Fix (15 мин):**
+1. Новый regex: `kinescope\.io/(?:embed/)?([A-Za-z0-9_-]{6,64})(?:/[A-Za-z0-9_-]+)?`
+2. Kinescope-specific handler в `process_url`: oembed + master.m3u8 generic (yt-dlp с m3u8 URL)
+3. Тест: URL → title: "Онлайн-практикум_Группа 6_Константин Никитин_27.04", duration: 0s (oembed не возвращает)
+
+**Reusable lesson 3.67.1:** **"Поддерживается в utils.py" ≠ "обрабатывается в process_url".** Lesson: при тестировании новой платформы проверять ОБА уровня — regex + actual extract handler.
+
+**Reusable lesson 3.67.2:** **yt-dlp generic extractor работает с m3u8 URL** даже когда platform-specific extractor падает. Lesson: для платформ без yt-dlp extractor использовать oembed для метаданных + m3u8 generic для subtitles/audio.
+
+**Reusable lesson 3.67.3:** **Проверять реальные URL форматы через `grep oembed` или web search**, а не доверять HANDOFF.md. Kinescope URL `m62ooCk2KbbvArqMy954bU` — это base62 ID, не UUID и не число.
+
+**Reusable lesson 3.67.4:** **Cron мониторинг уже спасает — `kinescope 404` будет виден в api.log через 5 мин после первого теста.** Lesson: добавить smoke test для каждой платформы в cron (per-platform).
+
+**Дата Sprint 24:** 24.06.2026. **Fix 15 мин.**
