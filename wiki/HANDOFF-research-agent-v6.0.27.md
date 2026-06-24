@@ -871,3 +871,48 @@ PM отправил YouTube URL → бот вернул HTML-дайджест **
 ---
 
 **Конец HANDOFF.md v6.0.31 (Sprint 22 + 23 + 23.1 hotfix). Сгенерирован Mavis 2026-06-24.**
+
+---
+
+## 12. Sprint 24 (2026-06-24) — Kinescope support fix
+
+### 12.1 Что произошло
+PM отправил Kinescope URL `https://kinescope.io/m62ooCk2KbbvArqMy954bU/plZ228gK` → бот ответил "❌ Эта ссылка не поддерживается".
+
+### 12.2 Корневая причина
+KINESCOPE_RE в `packages/research/utils.py` поддерживал только UUID и числовые ID:
+```python
+KINESCOPE_RE = re.compile(r'kinescope\.io/(?:embed/)?([0-9a-f]{8}-...|[0-9]+)', re.IGNORECASE)
+```
+Реальный Kinescope URL имеет формат `/<base62-id>/<hash>` (например `m62ooCk2KbbvArqMy954bU`) — НЕ поддерживался.
+
+Также `process_url` использовал `yt-dlp` для всех платформ, но yt-dlp возвращает 403 для Kinescope (прямой download запрещён).
+
+### 12.3 Fix (15 мин)
+1. ✅ Обновил `KINESCOPE_RE` чтобы поддерживал base62 ID + `/embed/<id>` + `/<id>/<hash>`
+   ```python
+   KINESCOPE_RE = re.compile(r'kinescope\.io/(?:embed/)?([A-Za-z0-9_-]{6,64})(?:/[A-Za-z0-9_-]+)?', re.IGNORECASE)
+   ```
+2. ✅ Добавил kinescope-specific handler в `process_url`: использует oembed endpoint + master.m3u8 generic (yt-dlp с m3u8 URL)
+3. ✅ Тест curl: `https://kinescope.io/m62ooCk2KbbvArqMy954bU/plZ228gK` → title: "Онлайн-практикум_Группа 6_Константин Никитин_27.04"
+
+### 12.4 Тест regex (после fix)
+```
+https://kinescope.io/m62ooCk2KbbvArqMy954bU/plZ228gK → ('kinescope', 'm62ooCk2KbbvArqMy954bU')
+https://kinescope.io/12345                            → (None, None)  # слишком короткий, OK
+https://kinescope.io/abc-12345-1234-1234-1234-1234… → ('kinescope', 'UUID')
+https://kinescope.io/embed/abc123                     → ('kinescope', 'abc123')
+```
+
+### 12.5 Lessons
+- 12.5.1 **Платформа "поддерживается" в utils.py ≠ реально обрабатывается в process_url** — нужно проверять оба уровня
+- 12.5.2 **yt-dlp generic с m3u8 URL работает** для платформ где yt-dlp extractor не поддерживается
+- 12.5.3 **oembed endpoint** — универсальный способ получить метаданные без авторизации
+
+### 12.6 GitHub commits (Sprint 24)
+- `swzhukov/llm_manifest` HANDOFF.md: §12 — добавлено
+- MISTAKES.md обновлён
+
+---
+
+**Конец HANDOFF.md v6.0.32 (Sprint 22 + 23 + 23.1 + 24). Сгенерирован Mavis 2026-06-24.**
