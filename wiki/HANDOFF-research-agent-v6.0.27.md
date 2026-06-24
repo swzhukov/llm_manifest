@@ -1,18 +1,19 @@
-# HANDOFF.md — Полный снимок состояния research-agent на 2026-06-23
+# HANDOFF.md — Полный снимок состояния research-agent на 2026-06-24
 
 > **Назначение:** source-of-truth файл для нового диалога с Mavis. Содержит ВСЁ, что нужно знать агенту, чтобы продолжить работу без контекста предыдущего разговора.
 
-> **Аудит:** сделан PM 2026-06-23 после разговора из 21+ спринта. Пошаговый self-check на 5 измерениях (цели, архитектура, релиз, ошибки, среда). Все противоречия вынесены в §7.
+> **Аудит:** сделан Mavis 2026-06-24 после Sprint 23 (A-G кроме VK). Спринт 22 (Flask recovery) зафиксирован в MISTAKES §3.64. Все новые lessons в §10.
 
 ---
 
 ## 0. Мета
 
-- **Дата handoff:** 2026-06-23
-- **Версия:** Research Agent v6.0.27 (workflow, active), **Flask v6.0.1 modular (post-Sprint 22 recovery)**
+- **Дата handoff:** 2026-06-24
+- **Версия:** Research Agent v6.0.27 (workflow, active), **Flask v6.0.30 (post-Sprint 23, endpoints + monitoring)**
 - **Workflow ID:** `VGVepaHqmjg2PXSj`, versionCounter=586, active=True, **50 нод**
-- **Flask архитектура:** `newton-api.py` (12 строк обёртка) → `core/app.py` (162 строки) → `packages/{research,kb,telegram_bot}/routes.py` (2040 строк, register(app))
+- **Flask архитектура:** `newton-api.py` (12 строк обёртка) → `core/app.py` (162 строки) → `packages/{research,kb,telegram_bot}/routes.py` (~2300 строк с register(app))
 - **Repo:** `https://github.com/swzhukov/AnalizIstochnikov`
+- **Sprint 23 (2026-06-24):** YouTube channel endpoint, Newton 503 fix, Bot Menu 8 commands, /user_stats real counters, cron monitoring + Newton watchdog. VK отложен (нужен service_token).
 - **llm_manifest:** `https://github.com/swzhukov/llm_manifest` (ENVIRONMENT.md, MISTAKES.md §3.1-§3.64, wiki/)
 - **PM:** Сергей Жуков (Telegram user_id 261540559)
 - **Bot:** @ZhukovsFirstBot (token в `/opt/beget/n8n/.env`)
@@ -776,4 +777,64 @@ Telegram user → Traefik :443 → n8n webhook (50 нод)
 
 ---
 
-**Конец HANDOFF.md v6.0.28 (post-Sprint 22). Сгенерирован Mavis 2026-06-23 после восстановления Flask.**
+## 10. Sprint 23 (2026-06-24) — production hardening
+
+### 10.1 Что сделано (A-G, кроме VK)
+
+| # | Задача | Результат |
+|---|---|---|
+| A | `/youtube_channel_latest` endpoint | ✅ Реализован через `yt-dlp --flat-playlist`, возвращает JSON с videos[] (id, title, url, duration_sec) |
+| B | Newton `/summarize` 401 fix | ✅ Graceful 503 вместо 500 с actionable hint: нужен `sk-` virtual key от LiteLLM admin |
+| C | VK comments | ⏸️ Отложен (нужен service_token от PM, инструкция в HANDOFF §10.5) |
+| D | Persistent Bot Menu | ✅ Расширен с 6 до 8 команд (`/channel`, `/health` добавлены), `setMyCommands` → `result: true` |
+| E | `/user_stats` real counters | ✅ Счётчики из БД: digests_count, last_digest_at, sources_count, actions_total/pending/done, dedup_24h |
+| F | HANDOFF refresh | ✅ Этот файл (v6.0.30) |
+| G | Newton key watchdog | ✅ Cron `*/30 * * * *` проверяет `/summarize`, шлёт Telegram alert при 503 (не чаще 1 раза / 6 часов) |
+
+### 10.2 Security fix (Sprint 23 side effect)
+- ✅ Удалён **hardcoded Newton token fallback** из 5 мест `kb/routes.py` (Сергей раньше зашил токен в код)
+- ⚠️ Токен `XmhocLHmdTFOf8NaqrdBCr4ai30o0XGxaGUckEqzrXk` уже скомпрометирован (был в чате + в коде) — **PM должен ротировать** после Sprint 24
+
+### 10.3 Cron мониторинг (new)
+- `/opt/beget/n8n/monitoring/health_check.sh` — каждые 5 мин, alerts на RAM>85%, disk>85%, auth_disabled, last_error (фильтрует KAPITAL)
+- `/opt/beget/n8n/monitoring/newton_watchdog.sh` — каждые 30 мин, alert если `/summarize` → 503 (NEWTON_TOKEN invalid)
+- Both → Telegram message на /send_message endpoint
+
+### 10.4 GitHub commits (Sprint 23)
+- `swzhukov/AnalizIstochnikov`: `workflows/research-agent-v6.0.27.json` (commit `0659a4bc8e`, 107 KB, 50 нод)
+- Sprint 22 wiki в `swzhukov/llm_manifest`: MISTAKES.md `74d438d4e1`, ENVIRONMENT.md `937a021108`, HANDOFF.md `f4bc8a9250`
+- Sprint 23 commits — готовим
+
+### 10.5 VK service_token — инструкция для PM (отложен на потом)
+
+1. Открыть https://vk.com/apps?act=manage (или новую панель VK ID)
+2. Создать **"Standalone-приложение"** (НЕ мини, НЕ no-code, НЕ сайт, НЕ Маруся)
+3. В настройках приложения → **API** → включить доступы: `video.getComments`, `video.get`, `users.get`
+4. Раздел **Ключи доступа** → скопировать **Сервисный ключ** (~85 символов base64)
+5. Прислать токен Mavis (запишу через heredoc, НЕ в открытом виде)
+6. Sprint 24: добавить в `/opt/beget/n8n/.env` как `VK_SERVICE_TOKEN`, расширить `/comments_analyze` для VK
+
+**Безопасность:**
+- ❌ Service token даёт доступ к публичным данным через API приложения, не может писать комменты / читать личку / получать доступ к аккаунту
+- ⚠️ Rate limit 5000 req/день — превышение → бан приложения
+- ✅ Если утечёт — другой человек сможет читать публичные комменты VK от имени приложения, но не более
+
+### 10.6 Roadmap (Sprint 24+)
+- VK comments (после получения service_token)
+- Newton `/summarize` full fix (после получения `sk-` virtual key)
+- Export `workflows/research-agent-v6.0.27.json` в GitHub — DONE (Sprint 23)
+- HANDOFF refresh — DONE (Sprint 23)
+- Persistent Bot Menu inline buttons (опционально)
+- Production deploy plan (Traefik routing, logrotate, бэкап БД)
+
+### 10.7 Lessons learned (Sprint 23)
+- 10.7.1 **Workflow вызывает endpoint, которого нет в packages** — `/youtube_channel_latest` был в workflow (HTTP нода) но не реализован в Flask. Lesson: при добавлении HTTP ноды в n8n сначала создавать endpoint, потом workflow.
+- 10.7.2 **Токен в коде = утечка** — hardcoded fallback в `kb/routes.py` был виден всем кто имел доступ к коду. Lesson: **никогда** hardcoded secrets, всегда `os.environ.get`.
+- 10.7.3 **Newton CLI использует Bearer, а нужен JWT** — `bit-summarize.1bitai.ru` принимает только `sk-XXXX` virtual key, не access token. Lesson: для LiteLLM proxy всегда генерировать virtual key через `/key/generate` admin endpoint.
+- 10.7.4 **Schema mismatch при UPDATE** — actions таблица имеет `acted` (0/1), не `status` ('pending'/'done'). Lesson: всегда проверять `PRAGMA table_info` перед написанием запросов.
+- 10.7.5 **Cron мониторинг + watchdog = раннее обнаружение падений** — узнаём о проблемах за 30 мин, не через жалобу PM. Lesson: добавлять cron при каждом production deploy.
+
+---
+
+**Конец HANDOFF.md v6.0.30 (post-Sprint 23 A-G, без VK). Сгенерирован Mavis 2026-06-24.**
+
