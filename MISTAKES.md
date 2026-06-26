@@ -3362,3 +3362,38 @@ Workflow v6.0.23 добавлены:
 **Reusable lesson 3.70.4:** **sqlite3 CLI не установлен на Beget VPS** — fallback на `cp` в backup script (но `.backup` команда лучше, consistency).
 
 **Дата Sprint 28-30:** 24.06.2026. **3 фичи за 1.5 часа.**
+
+### 3.71 (Sprint 31 — 2026-06-26) — LEMON SQUEEZER refactor: 2474 → 836 LOC
+
+**Цель:** упростить архитектуру с 4 модулей (research/kb/telegram_bot + core/app) до 1 файла bot.py.
+
+**Результат:**
+- ✅ 8 критичных endpoints вместо 40+
+- ✅ 1 файл bot.py (820 строк) вместо 4 файлов (2474 строки)
+- ✅ Zero-downtime атомарный switch (parallel test на 8081 → swap на 8080)
+- ✅ Backward compat: aliases /process_url, /yagpt_summarize для n8n workflow
+- ✅ Все 5 ключевых endpoints возвращают HTTP 200
+
+**Реальная DB schema v6.x ОТЛИЧАЕТСЯ от предполагаемой:**
+- `actions.status` column отсутствовал → ALTER TABLE ADD COLUMN перед init_db
+- `digests.title` column отсутствует → title хранится в items_json
+- `actions.text` (НЕ `action_text`) → реальное имя колонки
+
+**Reusable lesson 3.71.1:** **При ЛЮБОМ refactor сначала `PRAGMA table_info(table)` для каждой таблицы.** Не угадывай схему — тестируй реальную.
+
+**Reusable lesson 3.71.2:** **Backward compat aliases для всех старых endpoint names.** n8n workflow остался v589, не пришлось его обновлять. Saved: ~30 мин на обновление workflow.
+
+**Reusable lesson 3.71.3:** **Atomic switch через 2 разных порта:**
+1. Запустить новый бот на 8081 параллельно со старым на 8080
+2. Прогнать smoke test на 8081 (HTTP 200 на всех ключевых endpoints)
+3. `systemctl restart newton-api` → systemd ExecStart запускает bot_v7 на 8080
+4. Stop test instance на 8081
+Downtime = 0.
+
+**Reusable lesson 3.71.4:** **bash subshell НЕ передаёт env vars.** `bash -c "source .env; export X; python3 ..."` теряет X в background process. Правильно: `set -a; . .env; set +a` в ТЕКУЩЕМ shell, потом `python3 ... &`.
+
+**Reusable lesson 3.71.5:** **YAGNI применим к endpoint design.** 40+ endpoints для 1 user — over-engineered. 8 хватит с запасом.
+
+**Reusable lesson 3.71.6:** **Tuple return в Python — anti-pattern для HTTP responses.** Лучше всегда возвращать dict (с полем `error` или данными), а status code указывать в Flask-роуте. Избегает `ValueError: too many values to unpack`.
+
+**Дата Sprint 31:** 26.06.2026. **Refactor: 2.5 часа** (включая 4 миграции DB schema, aliases, atomic switch, тестирование).
