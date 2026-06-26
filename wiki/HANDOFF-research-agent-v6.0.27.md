@@ -994,3 +994,58 @@ https://kinescope.io/embed/abc123                     → ('kinescope', 'abc123'
 - 13.4.3 **Persistent keyboard ≠ setMyCommands** — это разные UX. setMyCommands = меню в боте, keyboard = кнопки внизу чата. Для личного use keyboard удобнее.
 - 13.4.4 **Insert endpoint ВНУТРИ register(app):** — def register ВНУТРИ register (Blueprint pattern). Не искать marker "def register(app):\n    \"\"\"" снаружи — все endpoints ВНУТРИ.
 
+
+---
+
+## 14. Sprint 31 (2026-06-26) — LEMON SQUEEZER refactor
+
+### 14.1 Что сделано
+- ✅ **Монолитный bot.py** (820 строк) заменил 4 модуля (2700 строк)
+- ✅ **8 критичных endpoints** вместо 40+ YAGNI:
+  - POST /process (universal URL → digest)
+  - POST /summarize_text (YandexGPT)
+  - POST /send_message (Telegram universal)
+  - POST /send_document
+  - POST /stats (KB + budget)
+  - POST /recent
+  - POST /pending
+  - POST /actions/feedback
+  - POST /admin/setup (Bot Menu + keyboard в одном)
+  - POST /admin/backup
+  - POST /telegram/webhook (slash-commands + URL handler)
+  - GET /health
+- ✅ Aliases /process_url и /yagpt_summarize для backward compat с n8n workflow (без изменений workflow!)
+- ✅ Все 5 endpoints тестированы HTTP 200 (health, stats, recent, pending, yagpt)
+- ✅ DB schema migration: actions.status column добавлен
+- ✅ Production переключён атомарно (rollback сохранён в .bak-sprint31)
+
+### 14.2 Lessons (Sprint 31)
+- 14.2.1 **40+ endpoints для 1 user = over-engineered.** 8 хватит. Лишние endpoints — это YAGNI.
+- 14.2.2 **Backward compat aliases — must-have при refactor.** n8n workflow продолжает работать без изменений.
+- 14.2.3 **DB schema НЕ пересоздавать с нуля.** Реальная v6.x схема отличается от моего предположения. Изучить `PRAGMA table_info(...)` ПЕРЕД миграцией.
+- 14.2.4 **Параллельный smoke test на 8081 → atomic switch на 8080.** Zero downtime для PM.
+- 14.2.5 **bash source + export в subshell НЕ передаёт env в background process** — нужен `set -a; . env; set +a` в foreground.
+- 14.2.6 **Persistent keyboard + Bot Menu в одном endpoint** (`/admin/setup {mode}`) — проще чем 2 отдельных.
+- 14.2.7 **Subshell bash -c "..." теряет env от source** — делать `set -a; . .env; set +a` в главном shell.
+
+### 14.3 Размер кода
+| До | После | Δ |
+|---|---|---|
+| newton-api.py (12 строк wrapper) | newton-api.py (16 строк launcher) | +4 |
+| core/app.py (162 строки) | — | -162 |
+| packages/research/routes.py (~900 строк) | — | -900 |
+| packages/kb/routes.py (~700 строк) | — | -700 |
+| packages/telegram_bot/routes.py (~700 строк) | — | -700 |
+| — | bot.py (820 строк) | +820 |
+| **~2474 строк в 5 файлах** | **836 строк в 2 файлах** | **-66% LOC, -60% файлов** |
+
+### 14.4 Что НЕ потеряно
+- ✅ Telegram Bot Menu (8 команд) + persistent keyboard (6 кнопок)
+- ✅ YandexGPT summarize + chunking + budget tracking
+- ✅ Universal URL processing (14 платформ)
+- ✅ KB schema (digests/actions/sources/claims/user_profile/seen_updates)
+- ✅ Newton transcribe fallback
+- ✅ Cron health + watchdog + daily backup
+- ✅ Auth через X-Telegram-User-Id header
+- ✅ n8n workflow (v589) — работает без изменений благодаря aliases
+
