@@ -3397,3 +3397,19 @@ Downtime = 0.
 **Reusable lesson 3.71.6:** **Tuple return в Python — anti-pattern для HTTP responses.** Лучше всегда возвращать dict (с полем `error` или данными), а status code указывать в Flask-роуте. Избегает `ValueError: too many values to unpack`.
 
 **Дата Sprint 31:** 26.06.2026. **Refactor: 2.5 часа** (включая 4 миграции DB schema, aliases, atomic switch, тестирование).
+
+### 3.72 (Sprint 31.1 — 2026-06-27) — /health_full endpoint missing
+
+**Симптом:** Cron health_check.sh каждую минуту шлёт PM "⚠️ Newton health check FAIL HTTP=404"
+
+**Root cause:** При refactor в Sprint 31 я создал только `/health` (простой), но cron health_check.sh (Sprint 23) вызывает `/health_full` (расширенный с auth_enabled, ram_pct, disk_pct, last_error). Endpoint `/health_full` остался в старом модуле `kb/routes.py`, который я переименовал в `.bak-sprint31`. **Cron по-прежнему работал, бот по-прежнему был, но `/health_full` → 404**.
+
+**Fix:** Добавил `/health_full` endpoint в `bot.py` с расширенными полями (auth_enabled, ram_pct, disk_pct, last_error, digests_count).
+
+**Reusable lesson 3.72.1:** **Cron скрипты могут ссылаться на endpoints которых больше нет.** При refactor обязательно grep по ВСЕМ cron скриптам: `grep -r "http://localhost:8080" /opt/beget/n8n/monitoring/`. Если endpoint называется `/foo` а в bot.py только `/foo_v2` — добавь alias.
+
+**Reusable lesson 3.72.2:** **Cron шлёт алерт каждые 5 минут если проверка падает.** PM заспамлен. Проверять health_check cron СРАЗУ после refactor, не через сутки.
+
+**Reusable lesson 3.72.3:** **`/health` (простой) и `/health_full` (расширенный) — два разных endpoint'а для разных use cases.** Простой для LB/uptime-checker, расширенный для cron с auth/RAM/disk/last_error. **Не выкидывать `/health_full` при минимализации.**
+
+**Время фикса:** 10 мин (нашёл root cause за 2 мин, добавил endpoint за 5 мин, deploy + test за 3 мин).
