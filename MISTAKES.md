@@ -3507,3 +3507,54 @@ Downtime = 0.
 **Reusable lesson 3.75.4:** **n8n execution_data хранится как PostgreSQL JSONB с flatbuffer-style compression.** Чтобы прочитать error: рекурсивно resolve строковых индексов через `d[int(idx)]`. Готовый скрипт лежит в `/workspace/exec_inspect.py`.
 
 **Время фикса:** 35 мин (5 мин grep workflow, 10 мин restore endpoints, 5 мин deploy, 5 мин E2E test, 10 мин на docs/commit).
+
+### 3.76 (Sprint 31.5 — 2026-06-27) — ПОЛНЫЙ AUDIT + ВСЕ БАГИ
+
+**Симптом:** PM: "Ничего не работает" (третий раз за день). Я сделал валидацию ВСЕХ заявленных функций.
+
+**Найдено 4 КРИТИЧЕСКИХ бага + 2 cron бага:**
+
+1. **Newton CLI env bug** — `subprocess.run(['newton', ...], env={...})` НЕ передавал NEWTON_TOKEN. Root cause: у меня было `env={**os.environ, 'NEWTON_TOKEN': ''}` — если os.environ не имел ключа, то передавался пустой. **Fix**: использовать `env={**os.environ, 'NEWTON_TOKEN': os.environ.get('NEWTON_TOKEN') or ''}`.
+
+2. **yt-dlp audio file detection** — `audio_path = '...proc_X.mp4'` НЕ СУЩЕСТВОВАЛ после yt-dlp! yt-dlp создал `.mp4.opus` (ExtractAudio добавил .opus, удалил .mp4). Код проверял `os.path.exists(audio_path)` — False → audio_transcribe path ПРОПУСКАЛСЯ. **Fix**: использовать `%(ext)s` template, искать файл через glob pattern ['mp3', 'm4a', 'opus', 'webm', 'wav', 'ogg'].
+
+3. **RAM 89% алерт спам** — зомби-процесс `yt-dlp --write-comments` с 28.3% RAM, 4+ часа висел. **Fix**: `kill -9 801402` + dedup в health_check.sh по md5 last_err hash (6h window).
+
+4. **Cron health_check.sh syntax error** — мой предыдущий fix сломал синтаксис (незакрытый if). **Fix**: полностью переписал с правильной структурой + should_alert() функция dedup.
+
+5. **6 endpoints удалены при refactor** — /user_profile, /seen_update, /comments_analyze, /render_digest, /kb_save, /user_stats, /digests_recent, /actions_recent, /audio_digest, /telegram_download. **Fix**: восстановил все + добавил debug/newton endpoint для диагностики.
+
+6. **DB created_at NOT NULL** — `DEFAULT CURRENT_TIMESTAMP` не сработал на SQLite версии Beget. **Fix**: explicit `, created_at` в INSERT.
+
+**Verify (100% green):**
+- ✅ 17 endpoints из n8n workflow все возвращают HTTP 200
+- ✅ 7 slash commands → ok:true  
+- ✅ /process YouTube URL → method=subs/audio_transcribe, summary/actions есть, kb_id=85
+- ✅ /telegram/webhook → 3 sequential executions 2118/2119/2120 SUCCESS
+- ✅ /admin/setup → keyboard + setMyCommands
+- ✅ /admin/backup → research.db.gz
+- ✅ /actions/feedback → action marked done
+- ✅ cron health_check → EXIT=0, dedup работает
+- ✅ cron backup_kb → daily backups создаются
+- ✅ cron newton_watchdog → EXIT=0
+- ✅ /debug/newton → полная диагностика pipeline
+
+**Final stats:**
+- 85 digests (было 64)
+- today_cost=4.27₽
+- actions: 190 total, 1 done, 189 pending
+- 3 successful webhook executions подряд
+
+**Reusable lesson 3.76.1:** **PM "ничего не работает" = проверить n8n executions FIRST**, не Flask log. Я 3 раза начинал с Flask → n8n. Прямо сейчас паттерн: SELECT * FROM execution_entity WHERE startedAt > NOW() - 1 hour ORDER BY id DESC LIMIT 5. Это даёт root cause за 5 сек.
+
+**Reusable lesson 3.76.2:** **yt-dlp -x создаёт файл с %(ext)s, не с --audio-format!** Использовать template `'%(ext)s'` в -o, искать файл через glob/цикл расширений. Иначе `os.path.exists(audio_path)` всегда False и audio fallback молча НЕ работает.
+
+**Reusable lesson 3.76.3:** **subprocess.run(env=...) если ключ не существует в os.environ — может передать None или ''.** Всегда `os.environ.get('KEY') or 'default'`.
+
+**Reusable lesson 3.76.4:** **Зомби-процессы yt-dlp** при --write-comments таймаутах. Нужно либо timeout=killer (signal.SIGTERM после timeout), либо отдельный systemd unit для yt-dlp.
+
+**Reusable lesson 3.76.5:** **Cron alerts нужен dedup.** Каждые 5 мин один и тот же last_error → 12 alerts в час → PM заспамлен. md5 hash + 6h window — простой и эффективный pattern.
+
+**Reusable lesson 3.76.6:** **При bash fix обязательно `bash -n script.sh` ДО deploy.** Мой fix health_check.sh имел syntax error — `bash -n` поймал бы.
+
+**Время полного audit + fixes:** 90 мин (5 мин grep workflow, 30 мин debug, 30 мин fixes, 25 мин verify + commit).
