@@ -3469,3 +3469,41 @@ Downtime = 0.
 **Reusable lesson 3.74.4:** **PM "ничего не работает" = debug по всем слоям:** (1) process alive? (2) endpoint OK? (3) /process with real URL? (4) n8n workflow? (5) Telegram delivery? Поочерёдно.
 
 **Время фикса:** 25 мин (4 root cause checks + 2 fixes + 2 deploy + verify).
+
+### 3.75 (Sprint 31.4 — 2026-06-27) — n8n workflow endpoint compatibility
+
+**Симптом:** PM: "Ничего не работает" (второй раз за день). Execution 2113, 2114, 2115 = status=error. Workflow падал на HTTP /user_profile → /comments_analyze → /render_digest → 404.
+
+**Root cause:** При Sprint 31 refactor я оставил 8 endpoints и aliases для /process_url и /yagpt_summarize. НО n8n workflow вызывает МНОГО других endpoints которые я удалил:
+- /user_profile
+- /seen_update
+- /comments_analyze
+- /render_digest
+- /transcribe, /fetch_youtube, /youtube_meta, /youtube_subs
+- /send_audio, /send_voice, /tts, /diarize
+- /newton_transcribe, /newton_fetch, /newton_voices
+- /help_inline, /action_feedback, /handle_callback
+
+Каждый из них возвращал 404 → n8n execution ERROR → PM не получал дайджест.
+
+**Fix (Sprint 31.4):**
+- ✅ Восстановил `/user_profile`, `/seen_update` (read KB)
+- ✅ Восстановил `/comments_analyze` как stub (YandexGPT comments анализ не входит в Lemon Squeezer)
+- ✅ Восстановил `/render_digest` через существующую `render_digest_html()`
+- ✅ Добавил stubs для остальных 14 endpoints (TTS, diarize, callbacks, etc) — все возвращают либо 200 с минимальными данными, либо 400 с правильной ошибкой
+
+**Verify:**
+- E2E webhook test → execution 2116 status=success ✅
+- /process YouTube URL → 7.4 сек ✅
+- 72 дайджеста в БД (было 64, +8 за сегодня)
+- today_cost=2.37₽ — YandexGPT работает
+
+**Reusable lesson 3.75.1:** **При YAGNI refactor ОБЯЗАТЕЛЬНО grep n8n workflow на ВСЕ HTTP Request ноды.** Если workflow вызывает /foo а в bot.py только /foo_v2 — добавь alias ИЛИ stub ИЛИ обнови workflow. Я добавил aliases /process_url и /yagpt_summarize, но забыл про /user_profile, /comments_analyze, /render_digest.
+
+**Reusable lesson 3.75.2:** **Workflow compatibility endpoints — pattern:** for each endpoint used by workflow, add either (a) real implementation OR (b) stub returning valid empty response OR (c) 400 with proper error. Stubs preferred over 404 (which break the workflow silently).
+
+**Reusable lesson 3.75.3:** **PM "ничего не работает" дважды за день = check executions FIRST.** Я потратил 25 мин на каждой жалобе проверяя SSH, /health, Flask log. Сразу смотреть n8n executions (`SELECT id, status FROM execution_entity WHERE startedAt > NOW() - INTERVAL '1 hour' ORDER BY id DESC LIMIT 5`) — это даёт точный root cause за 5 сек.
+
+**Reusable lesson 3.75.4:** **n8n execution_data хранится как PostgreSQL JSONB с flatbuffer-style compression.** Чтобы прочитать error: рекурсивно resolve строковых индексов через `d[int(idx)]`. Готовый скрипт лежит в `/workspace/exec_inspect.py`.
+
+**Время фикса:** 35 мин (5 мин grep workflow, 10 мин restore endpoints, 5 мин deploy, 5 мин E2E test, 10 мин на docs/commit).
