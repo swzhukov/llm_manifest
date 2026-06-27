@@ -3595,3 +3595,42 @@ Downtime = 0.
 **Reusable lesson 3.77.4:** **PM "пустой дайджест" ≠ workflow success.** Workflow возвращает 200 success даже если TL;DR пустой. Проверять надо: (1) execution status=success + finished=True, (2) send_message output json.message_id, (3) Build Digest output json.summary длина > 0.
 
 **Время fix:** 45 мин (5 мин debug n8n execution, 10 мин patch /process, 5 мин /send_document, 5 мин /send_html, 5 мин update workflow PUT, 15 мин verify).
+
+### 3.78 (Sprint 31.7 — 2026-06-27) — PM "комментарии потерял"
+
+**Симптом:** PM жалуется что комментарии не появляются в дайджесте.
+
+**Root cause:**
+1. **YouTube anti-bot блокирует комменты с IP Beget VPS** — даже `yt-dlp --extractor-args 'youtube:player_client=mweb'` требует cookies (Please sign in).
+2. **В Sprint 31.3 я УБРАЛ `--write-comments`** из основного yt-dlp call — YouTube throttling. Решил проблему timeout 25s, но потерял комменты.
+3. **TL;DR message не показывал статус комментов** — PM не понимал почему их нет.
+
+**Fixes (4):**
+1. ✅ Отдельный best-effort comments fetch в `/process_url` — `yt-dlp --write-comments --extractor-args 'youtube:player_client=mweb,web_safari'` с timeout=15s + cookies.txt support
+2. ✅ `/process_url` response теперь содержит `comments_meta: {source, unavailable_reason}`
+3. ✅ Workflow updated 2 раза: Code — Build Digest прокидывает comments_meta (version 16ad3de5), send_message (TL;DR) показывает comments info в text (version 76dd82db)
+4. ✅ README_COOKIES.md для PM — инструкция как положить cookies.txt чтобы разблокировать комменты
+
+**TL;DR messages:**
+- ✅ Comments есть: "💬 N популярных комментариев"
+- ⚠️ Comments недоступны (throttling): "💬 Комментарии YouTube недоступны (throttling)."
+
+**Reusable lesson 3.78.1:** **YouTube заблокировал IP Beget для анонимного comments fetch.** Только authenticated cookies могут получить комменты. Standalone yt-dlp 1.3s для metadata, но --write-comments 25s+ timeout → fail.
+
+**Reusable lesson 3.78.2:** **n8n execution_data хранит только RESPONSE, не REQUEST body.** Невозможно посмотреть какой text ушёл в TL;DR после отправки. Только message_id и ok=true в output.
+
+**Reusable lesson 3.78.3:** **PM "X потерял"** часто означает "не вижу в TL;DR сообщении". HTML файл с полным контентом PM не всегда открывает. Решение: показать summary в TL;DR текстом, а не только в HTML файле.
+
+**Reusable lesson 3.78.4:** **Best-effort fetch с graceful degradation pattern:**
+- Попробовать несколько способов (default client, mweb client, cookies)
+- Короткий timeout на каждый (15s max)
+- Вернуть `comments_meta` с source='none'/'failed'/'timeout'/'success' + reason
+- Никогда не падать с 500 — даже если всё failed
+
+**Final stats:**
+- 104 digests (было 92, +12 за день)
+- today_cost: 11.30₽
+- 235 actions total
+- Comments_meta теперь всегда present в response
+
+**Время fix:** 40 мин (5 мин detect, 10 мин реализация best-effort fetch, 10 мин workflow updates 2×, 5 мин README_COOKIES, 10 мин verify).
