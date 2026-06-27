@@ -3413,3 +3413,29 @@ Downtime = 0.
 **Reusable lesson 3.72.3:** **`/health` (простой) и `/health_full` (расширенный) — два разных endpoint'а для разных use cases.** Простой для LB/uptime-checker, расширенный для cron с auth/RAM/disk/last_error. **Не выкидывать `/health_full` при минимализации.**
 
 **Время фикса:** 10 мин (нашёл root cause за 2 мин, добавил endpoint за 5 мин, deploy + test за 3 мин).
+
+### 3.73 (Sprint 31.2 — 2026-06-27) — health_check.sh feedback loop (СПАМ алертов)
+
+**Симптом:** PM получил спам "⚠️ last_error: cron|..." каждые 5 минут (бесконечно).
+
+**Root cause — feedback loop (классика):**
+1. `/health_full.last_error` читал ПОСЛЕДНЮЮ строку `alerts.log`
+2. Если в alerts.log что-то есть — это попадало в `last_error`
+3. `health_check.sh` видел `last_error != OK` → писал новую ALERT строку в alerts.log
+4. Через 5 мин cron повторял: alerts.log выросла → last_error ещё страшнее → ещё ALERT
+5. PM получал алерт каждые 5 минут
+
+**Fix (3 части):**
+1. `/health_full.last_error` → брать только ERROR/500/502/503 строки из Flask api.log (НЕ из alerts.log)
+2. `health_check.sh` → добавить self-trigger фильтр `ALERT last_error=|cron|`
+3. Очистил alerts.log от спама (оставил только 5 последних строк)
+
+**Reusable lesson 3.73.1:** **НИКОГДА не читай `alerts.log` (или любой self-monitoring log) из health endpoint.** Это feedback loop по определению. Health endpoint должен брать данные из СИСТЕМНЫХ логов (Flask api.log, journald), а не из своего собственного alert log.
+
+**Reusable lesson 3.73.2:** **Cron health_check.sh должен иметь self-trigger фильтр.** Если ты шлёшь алерт про ошибку X — следующая итерация не должна слать алерт про ЭТОТ ЖЕ алерт (msg содержит "ALERT ...").
+
+**Reusable lesson 3.73.3:** **Проверять cron СРАЗУ после refactor.** Этот feedback loop работал с 20:55 (Sprint 31 deploy) до 09:30 утра следующего дня (12+ часов спама). Если бы я прогнал `bash health_check.sh` сразу после restart — увидел бы EXIT=0 + новые ALERT строки.
+
+**Reusable lesson 3.73.4:** **alerts.log должен быть APPEND-only с bounded size.** Иначе feedback loop делает его бесконечным. Решение: `logrotate.d/alerts.conf` (Sprint 32 backlog).
+
+**Время фикса:** 15 мин (нашёл root cause за 3 мин, fix /health_full + health_check.sh за 8 мин, deploy + verify за 4 мин).
