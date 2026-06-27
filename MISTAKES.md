@@ -3439,3 +3439,33 @@ Downtime = 0.
 **Reusable lesson 3.73.4:** **alerts.log должен быть APPEND-only с bounded size.** Иначе feedback loop делает его бесконечным. Решение: `logrotate.d/alerts.conf` (Sprint 32 backlog).
 
 **Время фикса:** 15 мин (нашёл root cause за 3 мин, fix /health_full + health_check.sh за 8 мин, deploy + verify за 4 мин).
+
+### 3.74 (Sprint 31.3 — 2026-06-27) — YouTube --write-comments throttling
+
+**Симптом:** PM: "Ничего не работает". /process endpoint возвращал 25s timeout для всех YouTube URL.
+
+**Root cause:**
+1. `yt-dlp --write-comments` (использовался для получения комментариев к видео) с 2026-06-27 стал зависать бесконечно на YouTube (throttling/anti-bot изменился)
+2. Standalone yt-dlp работает 1.5 сек, с `--write-comments` → timeout 30+ секунд
+3. /process endpoint унаследовал этот вызов → 25s timeout → fail
+
+**Fix (2 части):**
+1. ✅ Убрал `--write-comments` из основного yt-dlp call в `/process`
+2. ✅ Comments теперь None для всех видео (можно opt-in через отдельный запрос)
+
+**Side fix:** `INSERT INTO digests (items_json, user_id)` падал с `NOT NULL constraint failed: digests.created_at`. SQLite DEFAULT CURRENT_TIMESTAMP не срабатывал на Beget версии. Fix: explicit `, created_at` в INSERT.
+
+**Verify:**
+- /process YouTube → 6.7 сек ✅ (раньше 25s timeout)
+- /telegram/webhook → ok=true, kb_id=69, method=audio_transcribe ✅
+- "Me at the zoo" дайджест сгенерирован ✅
+
+**Reusable lesson 3.74.1:** **yt-dlp `--write-comments` fragile.** YouTube может изменить API в любой момент. Если комменты не критичны — НЕ добавляй `--write-comments` в hot path.
+
+**Reusable lesson 3.74.2:** **При timeout 25s в subprocess сначала проверь standalone вызов.** Если standalone работает 1-2s а subprocess таймаутит — проблема в args/env, не в сети.
+
+**Reusable lesson 3.74.3:** **SQLite DEFAULT CURRENT_TIMESTAMP может не работать на старых версиях.** Всегда explicit `created_at` в INSERT.
+
+**Reusable lesson 3.74.4:** **PM "ничего не работает" = debug по всем слоям:** (1) process alive? (2) endpoint OK? (3) /process with real URL? (4) n8n workflow? (5) Telegram delivery? Поочерёдно.
+
+**Время фикса:** 25 мин (4 root cause checks + 2 fixes + 2 deploy + verify).
