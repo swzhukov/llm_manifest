@@ -3558,3 +3558,40 @@ Downtime = 0.
 **Reusable lesson 3.76.6:** **При bash fix обязательно `bash -n script.sh` ДО deploy.** Мой fix health_check.sh имел syntax error — `bash -n` поймал бы.
 
 **Время полного audit + fixes:** 90 мин (5 мин grep workflow, 30 мин debug, 30 мин fixes, 25 мин verify + commit).
+
+### 3.77 (Sprint 31.6 — 2026-06-27) — PM "дайджест пустой" — 3 root causes
+
+**Симптом:** PM: "дайджест пустой" после того как Sprint 31.5 всё якобы починил.
+
+**Root cause #1: text пустой для Me at zoo** — Newton transcribe возвращает пустой результат для очень коротких (19 сек) или старых видео. Code — Build YandexGPT в workflow читает `text` поле из /process_url → text="" → YandexGPT ничего не генерит → summary/actions пустые → TL;DR пустой.
+
+**Root cause #2: /send_document "token or file missing"** — workflow передавал `file_path` в /send_document, но /render_digest возвращает `html` (не file_path). workflow баг.
+
+**Root cause #3: Code — Build Digest output пустой** — наследует пустой summary от yagpt.
+
+**Fixes:**
+1. ✅ /process endpoint: если text пустое — заполняю из description ("[Title]\n\n[description[:3000]]")
+2. ✅ /send_document endpoint: теперь принимает `html_content` + `title` (создаёт temp .html и шлёт)
+3. ✅ /send_html endpoint: новая unified точка render + send в один шаг
+4. ✅ Workflow обновлён: jsonBody в /send_document использует html_content (version f1c2279d)
+
+**Verify (Execution 2126):**
+- send_message (ack) → ok:true message_id=1319
+- send_document → ok:true caption="Дайджест: Me at the zoo" ✅ HTML файл отправлен
+- send_message (TL;DR) → ok:true message_id=1321 ✅ TL;DR с summary+actions
+
+**Stats после fix:**
+- 92 digests (было 85)
+- today_cost: 5.52₽
+- actions: 199 total
+- Me at zoo дайджест сгенерирован из description (нет транскрипта)
+
+**Reusable lesson 3.77.1:** **Workflow code → нода читает конкретное поле (text, не summary).** Если upstream endpoint возвращает разные поля в зависимости от условия — workflow может получить пустое значение. **Solution**: upstream endpoint должен ВСЕГДА возвращать content в `text` поле (fallback на description если нет транскрипта).
+
+**Reusable lesson 3.77.2:** **n8n PUT workflow требует minimal payload: {name, nodes, connections, settings={}}.** Read-only поля (active, versionId, etc) вызывают 400 "must NOT have additional properties". Settings обязателен (даже пустой), но не может содержать дополнительные properties кроме known schema.
+
+**Reusable lesson 3.77.3:** **/send_document (Telegram API) принимает только file.** Для HTML дайджеста — либо (a) сохранить в /tmp файл и передать file_path, либо (b) добавить `html_content` параметр и сам endpoint сохранит в tmp. Sprint 31.6: добавил оба варианта.
+
+**Reusable lesson 3.77.4:** **PM "пустой дайджест" ≠ workflow success.** Workflow возвращает 200 success даже если TL;DR пустой. Проверять надо: (1) execution status=success + finished=True, (2) send_message output json.message_id, (3) Build Digest output json.summary длина > 0.
+
+**Время fix:** 45 мин (5 мин debug n8n execution, 10 мин patch /process, 5 мин /send_document, 5 мин /send_html, 5 мин update workflow PUT, 15 мин verify).
