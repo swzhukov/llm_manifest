@@ -3634,3 +3634,40 @@ Downtime = 0.
 - Comments_meta теперь всегда present в response
 
 **Время fix:** 40 мин (5 мин detect, 10 мин реализация best-effort fetch, 10 мин workflow updates 2×, 5 мин README_COOKIES, 10 мин verify).
+
+### 3.79 (Sprint 31.8 — 2026-06-28) — RAM spike 99% prevention
+
+**Симптом:** PM получил "⚠️ RAM 99.1% (>85%)" alert (старый, ~15 часов назад).
+
+**Анализ:**
+- 2026-06-27T21:30:03+00:00 — RAM=99.1% (peak, OOM killer риск)
+- Сейчас RAM=59.7% (стабильно)
+- Alerts.log спамил flask last_err (старая 500 от 26.06 повторялась каждый health check)
+
+**Root cause #1:** Зомби yt-dlp процессы (28% RAM, 4+ часа висели в Sprint 31.5). Killed, но новый spike может случиться.
+
+**Root cause #2:** Alerts.log НЕ имел dedup для SAME errors (Sprint 31.5 fix был для cron self-trigger, не для repeated flask errors).
+
+**Fixes:**
+1. ✅ **RAM watchdog cron** `*/10 * * * * /opt/beget/n8n/monitoring/ram_watchdog.sh`:
+   - Если RAM > 85% — найти zombie yt-dlp процессы (>5% RAM, состояние S/D)
+   - Kill -9 их
+   - Sleep 3, проверить новый RAM
+   - Alert PM с summary
+2. ✅ **Alerts.log очищен** — оставлены только последние 5 строк (уникальные)
+3. ✅ Dedup в cron health_check (Sprint 31.5) теперь комбинируется с cleanup alerts.log
+
+**Verify:**
+- RAM=59.7% (стабильно)
+- Нет zombie yt-dlp
+- ram_watchdog cron активен, протестирован вручную EXIT=0
+
+**Reusable lesson 3.79.1:** **Зомби yt-dlp процессы — постоянная проблема.** yt-dlp при timeout иногда не cleanup сам. Нужен watchdog (cron + auto-kill). Sprint 31.8 fix добавил этот watchdog.
+
+**Reusable lesson 3.79.2:** **Alerts.log dedup НЕ решена полностью в Sprint 31.5.** Cron health_check сравнивает с предыдущим alert hash, но если errors НЕ идентичны (например, разные timestamps) — будут новые alerts. Решение: ограничить size alerts.log (logrotate).
+
+**Reusable lesson 3.79.3:** **2GB VPS — RAM лимит.** Beget VPS даёт 2GB RAM. n8n+postgres+docker+python съедают ~1.2 GB. Остаётся ~800 MB для newton-api и yt-dlp. Нужно следить чтобы yt-dlp не съел всё.
+
+**Reusable lesson 3.79.4:** **RAM alert может быть СТАРЫМ (задержка Telegram).** PM видит алерт через часы после события. Всегда проверять RAM realtime через SSH, не доверять алерту.
+
+**Время fix:** 15 мин (5 мин diag, 5 мин watchdog script, 3 мин deploy + cron, 2 мин test).
